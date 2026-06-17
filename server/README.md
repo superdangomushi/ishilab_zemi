@@ -3,6 +3,9 @@
 文字起こしアプリから送られてくるテキストを受け取り、**MySQL に直接保存**する簡易サーバー。
 Web サイトにアクセスすると保存済みファイルを一覧・ダウンロードできる。
 
+アップロード時に **Gemini** で本文を解析し、「課題」と「予定」を抽出する。それぞれ
+`期限,内容,詳細` の **CSV** として Web からダウンロードできる。
+
 ## セットアップ
 
 ```bash
@@ -26,9 +29,14 @@ npm start          # http://localhost:3000
 | `DB_PASSWORD` | （空） | パスワード |
 | `DB_NAME` | `moneybot` | データベース名 |
 | `PORT` | `3000` | サーバーの待受ポート |
+| `GEMINI_API_KEY` | （空） | Gemini の API キー。未設定なら課題/予定の解析はスキップ |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | 使用する Gemini モデル |
 
 ```bash
 DB_USER=root DB_PASSWORD=secret PORT=8080 npm start
+
+# Gemini 解析を有効にする場合（キーは Google AI Studio で発行）
+GEMINI_API_KEY=xxxxxxxx npm start
 ```
 
 テーブルは起動時に `CREATE TABLE IF NOT EXISTS` で自動作成する（DB 自体は事前に作成が必要）。
@@ -44,7 +52,21 @@ DB_USER=root DB_PASSWORD=secret PORT=8080 npm start
 | `email` | 送信したアカウント |
 | `filename` | ファイル名（例 `2026-06-14_15.txt`） |
 | `content` | テキスト本文（LONGTEXT） |
+| `kadai_json` / `yotei_json` | Gemini が抽出した課題・予定（JSON 配列） |
+| `analyzed_at` | 解析した時刻（未解析なら NULL） |
 | `created_at` / `updated_at` | 作成・更新時刻 |
+
+`kadai_json` / `yotei_json` の各要素は `{ deadline, content, details }`（= 期限/内容/詳細）。
+本文を上書き再送すると解析結果はクリアされ、再度 Gemini にかけ直される。
+
+## 課題・予定の抽出（Gemini）
+
+`GEMINI_API_KEY` を設定して起動すると、`/api/upload` で本文を保存した直後に Gemini が
+本文を解析し「課題」「予定」を抽出する。解析に失敗してもアップロード自体は成功扱いに
+する（本文は保存される。レスポンスの `analyzed` が `false` になる）。
+
+一覧ページの「課題/予定」列、または以下のエンドポイントから CSV を取得できる。
+CSV は `期限,内容,詳細` のヘッダ付き・UTF-8 BOM 付き（Excel でそのまま開ける）。
 
 ## アカウント登録
 
@@ -65,6 +87,8 @@ DB_USER=root DB_PASSWORD=secret PORT=8080 npm start
 | POST | `/api/upload` | 文字起こしテキストの受信 → MySQL 保存 |
 | GET | `/` | 保存済みファイルの一覧ページ（ダウンロードリンク付き） |
 | GET | `/download/:id` | ファイルを `.txt` としてダウンロード |
+| GET | `/kadai/:id.csv` | 抽出した**課題**を CSV（`期限,内容,詳細`）でダウンロード |
+| GET | `/yotei/:id.csv` | 抽出した**予定**を CSV（`期限,内容,詳細`）でダウンロード |
 
 ### POST /api/upload
 ```

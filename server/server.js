@@ -9,6 +9,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const db = require("./db");
+const gemini = require("./gemini");
 
 const PORT = process.env.PORT || 3000;
 const ACCOUNTS_FILE = path.join(__dirname, "accounts.json");
@@ -69,16 +70,85 @@ app.post("/api/upload", async (req, res) => {
   const rawName = req.get("X-Filename") || `transcript-${Date.now()}.txt`;
   const safeName = path.basename(rawName).replace(/[^A-Za-z0-9._-]/g, "_");
 
+  let id;
   try {
-    await db.saveTranscript(account.email, safeName, content);
+    id = await db.saveTranscript(account.email, safeName, content);
   } catch (e) {
     console.error("DB 保存に失敗:", e.message);
     return res.status(500).json({ ok: false, error: "保存に失敗しました" });
   }
 
   console.log(`受信: ${account.email} -> ${safeName} (${content.length} 文字) を DB 保存`);
-  res.json({ ok: true, saved: safeName, bytes: Buffer.byteLength(content, "utf8") });
+
+  // Gemini で「課題」「予定」を抽出して保存する。失敗してもアップロード自体は成功扱い。
+  let analyzed = false;
+  if (gemini.isConfigured() && id != null) {
+    try {
+      const result = await gemini.analyze(content);
+      await db.saveAnalysis(id, result.kadai, result.yotei);
+      analyzed = true;
+      console.log(
+        `解析: ${safeName} -> 課題 ${result.kadai.length} 件 / 予定 ${result.yotei.length} 件`
+      );
+    } catch (e) {
+      console.error(`Gemini 解析に失敗 (${safeName}):`, e.message);
+    }
+  }
+
+  res.json({
+    ok: true,
+    saved: safeName,
+    bytes: Buffer.byteLength(content, "utf8"),
+    analyzed,
+  });
 });
+
+// CSV 用ユーティリティ。値内のカンマ・引用符・改行を RFC4180 に従ってエスケープ。
+function csvCell(value) {
+  const s = String(value ?? "");
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function itemsToCsv(items) {
+  const header = ["期限", "内容", "詳細"];
+  const lines = [header.join(",")];
+  for (const it of items) {
+    lines.push([csvCell(it.deadline), csvCell(it.content), csvCell(it.details)].join(","));
+  }
+  // Excel で文字化けしないよう UTF-8 BOM を付ける。
+  return "﻿" + lines.join("\r\n") + "\r\n";
+}
+
+function sendCsv(res, filename, items) {
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+  );
+  res.send(itemsToCsv(items));
+}
+
+// 課題 CSV のダウンロード。
+app.get("/kadai/:id.csv", async (req, res) => {
+  await serveAnalysisCsv(req, res, "kadai", "課題");
+});
+
+// 予定 CSV のダウンロード。
+app.get("/yotei/:id.csv", async (req, res) => {
+  await serveAnalysisCsv(req, res, "yotei", "予定");
+});
+
+async function serveAnalysisCsv(req, res, kind, label) {
+  let data;
+  try {
+    data = await db.getAnalysis(req.params.id, kind);
+  } catch (e) {
+    return res.status(500).type("text/plain").send("DB 接続エラー: " + e.message);
+  }
+  if (!data) return res.status(404).type("text/plain").send("見つかりません");
+  const base = data.filename.replace(/\.[^.]+$/, "");
+  sendCsv(res, `${base}_${label}.csv`, data.items);
+}
 
 // Web サイト: 保存済みファイルの一覧（ダウンロードリンク付き）。
 app.get("/", async (_req, res) => {
@@ -91,18 +161,24 @@ app.get("/", async (_req, res) => {
 
   const tableRows = rows.length
     ? rows
-        .map(
-          (r) => `
+        .map((r) => {
+          const analyzed = Boolean(r.analyzed_at);
+          const csvLinks = analyzed
+            ? `<a class="dl csv" href="/kadai/${r.id}.csv">課題CSV</a>
+               <a class="dl csv" href="/yotei/${r.id}.csv">予定CSV</a>`
+            : `<span class="pending">未解析</span>`;
+          return `
         <tr>
           <td>${escapeHtml(r.email)}</td>
           <td>${escapeHtml(r.filename)}</td>
           <td class="num">${r.chars}</td>
           <td>${new Date(r.updated_at).toLocaleString("ja-JP")}</td>
           <td><a class="dl" href="/download/${r.id}">ダウンロード</a></td>
-        </tr>`
-        )
+          <td>${csvLinks}</td>
+        </tr>`;
+        })
         .join("")
-    : `<tr><td colspan="5" class="empty">まだファイルがありません。</td></tr>`;
+    : `<tr><td colspan="6" class="empty">まだファイルがありません。</td></tr>`;
 
   res.type("text/html").send(`<!DOCTYPE html>
 <html lang="ja">
@@ -120,13 +196,15 @@ app.get("/", async (_req, res) => {
     td.empty { text-align: center; color: #888; }
     a.dl { display: inline-block; padding: 4px 10px; background: #2563eb;
            color: #fff; text-decoration: none; border-radius: 4px; }
+    a.dl.csv { background: #16a34a; margin: 2px 0; }
+    span.pending { color: #888; font-size: 0.9em; }
   </style>
 </head>
 <body>
   <h1>文字起こしファイル一覧</h1>
   <table>
     <thead>
-      <tr><th>アカウント</th><th>ファイル名</th><th>文字数</th><th>更新</th><th></th></tr>
+      <tr><th>アカウント</th><th>ファイル名</th><th>文字数</th><th>更新</th><th></th><th>課題/予定</th></tr>
     </thead>
     <tbody>${tableRows}</tbody>
   </table>
