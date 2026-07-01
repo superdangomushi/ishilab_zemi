@@ -10,9 +10,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -57,7 +58,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
@@ -173,34 +173,31 @@ private fun MainScreen(
                 }
             }
         }
-        // 音声→テキスト変換中は画面中央にスピナーと進捗を表示。
+        // 音声→テキスト変換中は右上に小さくスピナー表示（操作は妨げない）。
         if (service.transcribing) {
-            TranscribingOverlay(service)
+            TranscribingBadge()
         }
     }
 }
 
-/** 文字起こし処理中に画面中央でぐるぐる表示するオーバーレイ。 */
+/** 文字起こし処理中を右上にちょこんと示す小さなインジケータ（画面操作はブロックしない）。 */
 @Composable
-private fun TranscribingOverlay(service: ServiceState) {
-    val denom = service.chunksDone + service.queueSize + 1
-    val percent = (service.chunksDone * 100) / denom
-    Box(
+private fun BoxScope.TranscribingBadge() {
+    Surface(
+        shape = RoundedCornerShape(50),
+        tonalElevation = 6.dp,
+        shadowElevation = 4.dp,
         modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.25f)),
-        contentAlignment = Alignment.Center
+            .align(Alignment.TopEnd)
+            .padding(top = 10.dp, end = 10.dp)
     ) {
-        Surface(shape = RoundedCornerShape(16.dp), tonalElevation = 6.dp) {
-            Column(
-                modifier = Modifier.padding(28.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                CircularProgressIndicator()
-                Text("音声処理中です…", style = MaterialTheme.typography.titleMedium)
-                Text("現在 $percent%", style = MaterialTheme.typography.bodyMedium)
-            }
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text("処理中", style = MaterialTheme.typography.labelMedium)
         }
     }
 }

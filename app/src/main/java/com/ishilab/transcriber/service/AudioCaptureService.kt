@@ -51,7 +51,8 @@ class AudioCaptureService : Service() {
     private var engine: TranscriptionEngine? = null
 
     private lateinit var wakeLock: PowerManager.WakeLock
-    private var backgroundSync: BackgroundSync? = null
+    @Volatile private var backgroundSync: BackgroundSync? = null
+    private val shutdownGuard = AtomicBoolean(false)
 
     private val chunkQueue = LinkedBlockingQueue<FloatArray>(QUEUE_CAPACITY)
 
@@ -132,8 +133,6 @@ class AudioCaptureService : Service() {
     private fun stopEverything() {
         val wasActive = serviceActive.getAndSet(false)
         recording.set(false)
-        backgroundSync?.stop()
-        backgroundSync = null
         if (wasActive) {
             accrueRecordingTime()
             // ワーカーに終了を通知（poison pill）。キューが満杯でも確実に止めるため clear もする。
@@ -148,9 +147,33 @@ class AudioCaptureService : Service() {
             workerThread = null
             engine?.release()
             engine = null
-            if (wakeLock.isHeld) wakeLock.release()
         }
         pushState { it.copy(active = false, paused = false, transcribing = false, recordingStartedElapsed = 0L) }
+        // 録音・文字起こしは止めるが、未送信ファイルの送信が終わるまで常駐を維持する。
+        startDraining()
+    }
+
+    /** 終了後、未送信の文字起こしファイルが全て送れるまで送信を続け、完了したら自分を止める。 */
+    private fun startDraining() {
+        val sync = backgroundSync
+        if (sync == null) {
+            finishShutdown()
+            return
+        }
+        sync.setCurrentHourFile(null)      // 現在の時刻ファイルも送信対象に含める
+        sync.onAllSent = { finishShutdown() }
+        pushState { it.copy(draining = true) }
+        updateNotification()               // 「送信待ち…」表示に更新
+        sync.triggerNow()                  // すぐに送信パスを走らせる
+    }
+
+    /** 送信完了（または送信不能）時の最終後始末。多重実行を防ぐ。 */
+    private fun finishShutdown() {
+        if (!shutdownGuard.compareAndSet(false, true)) return
+        backgroundSync?.stop()
+        backgroundSync = null
+        if (wakeLock.isHeld) wakeLock.release()
+        pushState { it.copy(draining = false) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -180,6 +203,8 @@ class AudioCaptureService : Service() {
                 if (wakeLock.isHeld) wakeLock.release()
             }
         }
+        backgroundSync?.stop()
+        backgroundSync = null
         control.shutdown()
         super.onDestroy()
     }
@@ -295,6 +320,7 @@ class AudioCaptureService : Service() {
             return
         }
 
+        var lastHourFile: String? = null
         while (serviceActive.get()) {
             val chunk = try {
                 chunkQueue.take()
@@ -320,11 +346,19 @@ class AudioCaptureService : Service() {
             if (text.isNotBlank()) {
                 val now = System.currentTimeMillis()
                 store.append(text, now)
+                val fileName = store.fileFor(now).name
+                // 時刻が変わって新しいファイルになったら、直前の完了ファイルを即送信。
+                if (lastHourFile != null && lastHourFile != fileName) {
+                    backgroundSync?.triggerNow()
+                }
+                lastHourFile = fileName
+                // 現在書き込み中のファイルは未完了として送らないよう伝える。
+                backgroundSync?.setCurrentHourFile(fileName)
                 pushState {
                     it.copy(
                         chunksDone = it.chunksDone + 1,
                         lastText = text,
-                        currentFile = store.fileFor(now).name
+                        currentFile = fileName
                     )
                 }
                 updateNotification()
@@ -355,6 +389,7 @@ class AudioCaptureService : Service() {
         )
 
         val title = when {
+            s.draining -> "送信待ち（未送信を送信中）"
             s.paused -> "一時停止中（マイク解放）"
             else -> "録音・文字起こし中"
         }
@@ -375,12 +410,14 @@ class AudioCaptureService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
 
-        if (s.paused) {
-            builder.addAction(0, "再開", action(ACTION_RESUME))
-        } else {
-            builder.addAction(0, "一時停止", action(ACTION_PAUSE))
+        if (!s.draining) {
+            if (s.paused) {
+                builder.addAction(0, "再開", action(ACTION_RESUME))
+            } else {
+                builder.addAction(0, "一時停止", action(ACTION_PAUSE))
+            }
+            builder.addAction(0, "終了", action(ACTION_STOP))
         }
-        builder.addAction(0, "終了", action(ACTION_STOP))
         return builder.build()
     }
 
@@ -406,7 +443,7 @@ class AudioCaptureService : Service() {
     }
 
     private fun updateNotification() {
-        if (!serviceActive.get()) return
+        if (!serviceActive.get() && !state.value.draining) return
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification())
     }
@@ -452,6 +489,7 @@ data class ServiceState(
     val lastText: String = "",
     val currentFile: String? = null,
     val transcribing: Boolean = false,
+    val draining: Boolean = false,
     val error: String? = null,
     /** 現在のマイク稼働区間の開始時刻(elapsedRealtime)。0 のとき計測停止中。 */
     val recordingStartedElapsed: Long = 0L,
