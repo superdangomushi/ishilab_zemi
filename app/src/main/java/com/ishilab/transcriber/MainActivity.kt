@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -42,10 +45,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -95,6 +101,8 @@ class MainActivity : ComponentActivity() {
                         onLoadTasks = { viewModel.loadTasks() },
                         onToggleTask = viewModel::toggleTaskDone,
                         onSetShowDone = { viewModel.loadTasks(it) },
+                        onLoadSummary = viewModel::loadSummary,
+                        onGenerateSummary = viewModel::generateSummary,
                     )
                 }
             }
@@ -135,6 +143,8 @@ private fun MainScreen(
     onLoadTasks: () -> Unit,
     onToggleTask: (MoneybotClient.Task) -> Unit,
     onSetShowDone: (Boolean) -> Unit,
+    onLoadSummary: () -> Unit,
+    onGenerateSummary: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(0) }
     Scaffold(
@@ -151,7 +161,10 @@ private fun MainScreen(
             }
             when (tab) {
                 0 -> RecordingTab(ui, service, onDownload, onSelectModel, onStart, onStop, onRefresh, onSend)
-                else -> SecretaryTab(ui, onLogin, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone)
+                else -> SecretaryTab(
+                    ui, onLogin, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone,
+                    onLoadSummary, onGenerateSummary
+                )
             }
         }
     }
@@ -226,6 +239,8 @@ private fun SecretaryTab(
     onLoadTasks: () -> Unit,
     onToggleTask: (MoneybotClient.Task) -> Unit,
     onSetShowDone: (Boolean) -> Unit,
+    onLoadSummary: () -> Unit,
+    onGenerateSummary: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -238,12 +253,15 @@ private fun SecretaryTab(
         if (!ui.account.loggedIn) {
             item {
                 Text(
-                    "moneybot.jp にログインすると、予定・課題の確認と秘書チャットが使えます。",
+                    "moneybot.jp にログインすると、今日の要約・予定・課題の確認と秘書チャットが使えます。",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
             return@LazyColumn
         }
+
+        // ---- 今日の要約 ----
+        item { SummaryCard(ui, onLoadSummary, onGenerateSummary) }
 
         // ---- 予定・課題 ----
         item {
@@ -280,6 +298,49 @@ private fun SecretaryTab(
 
         // ---- 秘書チャット ----
         item { SecretaryCard(ui, onAsk) }
+    }
+}
+
+/** 今日の要約カード。サーバーの日次要約を表示し、更新/生成し直しができる。 */
+@Composable
+private fun SummaryCard(
+    ui: UiState,
+    onLoadSummary: () -> Unit,
+    onGenerateSummary: () -> Unit,
+) {
+    // ログイン直後に一度取得する（ログインで既に取得済みでも安全）。
+    LaunchedEffect(ui.account.email) { onLoadSummary() }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("今日の要約", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onGenerateSummary, enabled = !ui.summaryLoading) {
+                        Text("生成")
+                    }
+                    OutlinedButton(onClick = onLoadSummary, enabled = !ui.summaryLoading) {
+                        Text("更新")
+                    }
+                }
+            }
+            ui.summaryError?.let {
+                Text("エラー: $it", color = MaterialTheme.colorScheme.error)
+            }
+            when {
+                ui.summaryLoading && ui.summary.isNullOrBlank() ->
+                    Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+                ui.summary.isNullOrBlank() ->
+                    Text(
+                        "まだ今日の要約はありません。録音がたまるか「生成」で作成できます。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                else -> Text(ui.summary, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }
 
@@ -590,12 +651,16 @@ private fun TranscriptCard(
     onSend: (TranscriptItem) -> Unit,
     context: android.content.Context,
 ) {
+    var expanded by remember { mutableStateOf(false) }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(item.name, style = MaterialTheme.typography.titleSmall)
             Text("${item.sizeBytes} bytes", style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "閉じる" else "本文")
+                }
                 OutlinedButton(onClick = { shareFile(context, item.path) }) {
                     Text("共有")
                 }
@@ -605,6 +670,28 @@ private fun TranscriptCard(
                     enabled = ui.account.loggedIn && ui.sendingFile == null
                 ) {
                     Text(if (sending) "送信中…" else "moneybotへ送信")
+                }
+            }
+            if (expanded) {
+                // 本文はファイルサイズ変化のたびに読み直す（録音中の現在ファイルにも追随）。
+                val content by produceState<String?>(null, item.path, item.sizeBytes) {
+                    value = withContext(Dispatchers.IO) {
+                        runCatching { File(item.path).readText() }
+                            .getOrElse { "読み込み失敗: ${it.message}" }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (content == null) {
+                    Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text(
+                        content!!.ifBlank { "（空です）" },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 240.dp)
+                            .verticalScroll(rememberScrollState())
+                    )
                 }
             }
         }

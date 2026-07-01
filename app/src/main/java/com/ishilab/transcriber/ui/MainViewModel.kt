@@ -45,6 +45,9 @@ data class UiState(
     val tasksLoading: Boolean = false,
     val tasksError: String? = null,
     val showDoneTasks: Boolean = false,
+    val summary: String? = null,
+    val summaryLoading: Boolean = false,
+    val summaryError: String? = null,
 ) {
     val anyModelReady: Boolean get() = downloadedModels.isNotEmpty()
 }
@@ -128,6 +131,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         it.copy(loginInProgress = false, loginError = null, account = currentAccount())
                     }
                     loadTasks()
+                    loadSummary()
                 }
                 is MoneybotClient.Result.Error -> {
                     _ui.update { it.copy(loginInProgress = false, loginError = result.message) }
@@ -141,7 +145,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update {
             it.copy(
                 account = currentAccount(), sendMessage = null,
-                tasks = emptyList(), tasksError = null, chatLog = emptyList()
+                tasks = emptyList(), tasksError = null, chatLog = emptyList(),
+                summary = null, summaryError = null
+            )
+        }
+    }
+
+    /** 今日の要約をサーバーから取得する。 */
+    fun loadSummary() {
+        if (!accountStore.loggedIn) return
+        _ui.update { it.copy(summaryLoading = true, summaryError = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                moneybot.fetchSummary(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            result.fold(
+                onSuccess = { s -> _ui.update { it.copy(summary = s, summaryLoading = false) } },
+                onFailure = { e ->
+                    _ui.update {
+                        it.copy(summaryLoading = false, summaryError = e.message ?: "取得に失敗しました")
+                    }
+                }
+            )
+        }
+    }
+
+    /** 今日の要約をいま生成し直す。 */
+    fun generateSummary() {
+        if (!accountStore.loggedIn || _ui.value.summaryLoading) return
+        _ui.update { it.copy(summaryLoading = true, summaryError = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                moneybot.generateSummary(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            result.fold(
+                onSuccess = { s -> _ui.update { it.copy(summary = s, summaryLoading = false) } },
+                onFailure = { e ->
+                    _ui.update {
+                        it.copy(summaryLoading = false, summaryError = e.message ?: "生成に失敗しました")
+                    }
+                }
             )
         }
     }

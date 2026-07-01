@@ -56,10 +56,12 @@ system-deps: ## Node.js + MySQL を導入し MySQL を起動 (要 sudo)
 db: ## DB・専用ユーザーを作成し schema.sql を適用 (要 sudo)
 	@echo ">> DB '$(DB_NAME)' と ユーザー '$(DB_USER)' を作成し schema.sql を適用します"
 	# 管理者はソケット認証(sudo mysql)で接続。識別子はシンプル名、文字列は "..." (既定は非ANSI_QUOTES)。
+	# mysql2 は 127.0.0.1 へ TCP 接続するため、ユーザーのホストは '%' で作る
+	# (MySQL では 'localhost'(ソケット) と '127.0.0.1'(TCP) は別扱いのため)。
 	sudo mysql -e 'CREATE DATABASE IF NOT EXISTS $(DB_NAME) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
-	  CREATE USER IF NOT EXISTS "$(DB_USER)"@"localhost" IDENTIFIED BY "$(DB_PASSWORD)"; \
-	  ALTER USER "$(DB_USER)"@"localhost" IDENTIFIED BY "$(DB_PASSWORD)"; \
-	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"localhost"; \
+	  CREATE USER IF NOT EXISTS "$(DB_USER)"@"%" IDENTIFIED BY "$(DB_PASSWORD)"; \
+	  ALTER USER "$(DB_USER)"@"%" IDENTIFIED BY "$(DB_PASSWORD)"; \
+	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"%"; \
 	  FLUSH PRIVILEGES;'
 	sudo mysql $(DB_NAME) < schema.sql
 	@echo ">> DB 準備完了"

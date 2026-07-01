@@ -72,6 +72,44 @@ class MoneybotClient {
         }
     }
 
+    /** 今日の要約を取得する（未生成なら空文字）。 */
+    fun fetchSummary(baseUrl: String, email: String, token: String): kotlin.Result<String> {
+        val path = "/api/summary/today?email=${enc(email)}&token=${enc(token)}"
+        val url = endpoint(baseUrl, path)
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                json.optString("summary")
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
+    /** 今日の要約をサーバー(Gemini)でいま生成し直す。生成された本文を返す。 */
+    fun generateSummary(baseUrl: String, email: String, token: String): kotlin.Result<String> {
+        val url = endpoint(baseUrl, "/api/summary/today/generate")
+        val body = JSONObject().put("email", email).put("token", token).toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                json.optString("summary")
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
     /** 課題・予定の完了/未完了を切り替える。 */
     fun setTaskDone(
         baseUrl: String, email: String, token: String, id: Long, done: Boolean,
