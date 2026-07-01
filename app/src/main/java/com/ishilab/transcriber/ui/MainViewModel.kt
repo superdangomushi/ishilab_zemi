@@ -17,6 +17,9 @@ import java.io.File
 
 data class TranscriptItem(val name: String, val path: String, val sizeBytes: Long)
 
+/** 秘書チャットの1メッセージ。fromUser=true なら利用者の発話。 */
+data class ChatMessage(val text: String, val fromUser: Boolean)
+
 /** moneybot.jp のログイン状態。 */
 data class AccountState(
     val loggedIn: Boolean = false,
@@ -35,6 +38,8 @@ data class UiState(
     val loginError: String? = null,
     val sendingFile: String? = null,
     val sendMessage: String? = null,
+    val chatLog: List<ChatMessage> = emptyList(),
+    val askInProgress: Boolean = false,
 ) {
     val anyModelReady: Boolean get() = downloadedModels.isNotEmpty()
 }
@@ -139,6 +144,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearSendMessage() {
         _ui.update { it.copy(sendMessage = null) }
+    }
+
+    /**
+     * 秘書に質問・依頼する。サーバー(Gemini)が回答し、「予定入れといて」等は登録まで実行する。
+     */
+    fun ask(question: String) {
+        val q = question.trim()
+        if (q.isEmpty() || _ui.value.askInProgress) return
+        if (!accountStore.loggedIn) {
+            _ui.update {
+                it.copy(chatLog = it.chatLog + ChatMessage("先に moneybot.jp にログインしてください", false))
+            }
+            return
+        }
+        _ui.update {
+            it.copy(chatLog = it.chatLog + ChatMessage(q, true), askInProgress = true)
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                moneybot.ask(accountStore.baseUrl, accountStore.email, accountStore.token, q)
+            }
+            val reply = result.fold(
+                onSuccess = { it.reply.ifBlank { "（応答なし）" } },
+                onFailure = { "エラー: ${it.message ?: "通信に失敗しました"}" }
+            )
+            _ui.update {
+                it.copy(chatLog = it.chatLog + ChatMessage(reply, false), askInProgress = false)
+            }
+        }
     }
 
     private fun currentAccount() = AccountState(

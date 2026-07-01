@@ -1,34 +1,42 @@
-const ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
+// LINE への警告/通知送信。LINE Messaging API の push を Node 標準 fetch で叩く。
+//
+// 必要な設定:
+//   環境変数 LINE_CHANNEL_ACCESS_TOKEN ... LINE Developers のチャネルアクセストークン（長期）
+//   accounts.json の各アカウントに lineUserId ... 送信先ユーザーの userId（U で始まる文字列）
+//
+// LINE_CHANNEL_ACCESS_TOKEN が未設定、または送信先 lineUserId が無い場合は送信をスキップする
+// （アプリ/サーバーは動き続け、ローカル通知だけ機能する）。
+
+const CHANNEL_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN || "";
 const PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push";
 
-// LINE のテキストメッセージは 1 通あたり最大 5000 文字。余裕をもって切る。
-const MAX_TEXT_LENGTH = 4900;
+const isConfigured = () => Boolean(CHANNEL_TOKEN);
 
-const isConfigured = () => Boolean(ACCESS_TOKEN);
-
-// 指定した userId（またはグループ ID）へテキストを送る。
+// to: 送信先 userId。text: 本文。成功で true、未設定/失敗で false（例外は投げない）。
 async function pushText(to, text) {
-  if (!ACCESS_TOKEN) throw new Error("LINE_CHANNEL_ACCESS_TOKEN が未設定です");
-  if (!to) throw new Error("送信先 (userId) が未指定です");
-
-  const body = {
-    to,
-    messages: [{ type: "text", text: text.slice(0, MAX_TEXT_LENGTH) }],
-  };
-
-  const res = await fetch(PUSH_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`LINE API エラー ${res.status}: ${detail.slice(0, 300)}`);
+  if (!CHANNEL_TOKEN || !to) return false;
+  try {
+    const res = await fetch(PUSH_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${CHANNEL_TOKEN}`,
+      },
+      body: JSON.stringify({
+        to,
+        messages: [{ type: "text", text: String(text).slice(0, 4900) }],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error(`LINE push 失敗 ${res.status}: ${body.slice(0, 200)}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("LINE push 例外:", e.message);
+    return false;
   }
 }
 
-module.exports = { pushText, isConfigured };
+module.exports = { isConfigured, pushText };

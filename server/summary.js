@@ -71,15 +71,16 @@ async function sendDailySummary() {
       continue;
     }
     const message = buildMessage(today, data.kadai, data.yotei);
-    try {
-      await line.pushText(account.lineUserId, message);
+    // line.pushText は例外を投げず、成功で true / 失敗で false を返す。
+    const ok = await line.pushText(account.lineUserId, message);
+    if (ok) {
       sent++;
       console.log(
         `日次サマリ送信: ${account.email} (課題 ${data.kadai.length} / 予定 ${data.yotei.length})`
       );
-    } catch (e) {
+    } else {
       failed++;
-      console.error(`日次サマリ送信に失敗 (${account.email}):`, e.message);
+      console.error(`日次サマリ送信に失敗 (${account.email})`);
     }
   }
 

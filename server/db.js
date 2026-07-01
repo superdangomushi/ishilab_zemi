@@ -1,4 +1,5 @@
 // MySQL 接続まわり。接続情報は環境変数で渡す。
+const crypto = require("crypto");
 const mysql = require("mysql2/promise");
 
 const pool = mysql.createPool({
@@ -10,6 +11,9 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 5,
   charset: "utf8mb4",
+  // tasks.deadline_at などをローカル時刻文字列として扱うため、UTC 変換を無効化。
+  timezone: "local",
+  dateStrings: true,
 });
 
 // 起動時にテーブルが無ければ作る（DB 自体は事前に作成しておく前提）。
@@ -22,28 +26,82 @@ async function ensureSchema() {
       content     LONGTEXT     NOT NULL,
       kadai_json  LONGTEXT     NULL,
       yotei_json  LONGTEXT     NULL,
+      summary     TEXT         NULL,
       analyzed_at DATETIME     NULL,
       created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_email_filename (email, filename)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      email         VARCHAR(255) NOT NULL,
+      type          VARCHAR(16)  NOT NULL,
+      content       VARCHAR(512) NOT NULL,
+      details       TEXT         NULL,
+      deadline_at   DATETIME     NULL,
+      date_only     TINYINT(1)   NOT NULL DEFAULT 0,
+      status        VARCHAR(16)  NOT NULL DEFAULT 'pending',
+      source_id     INT          NULL,
+      dedup_key     CHAR(40)     NOT NULL,
+      notified_1d   TINYINT(1)   NOT NULL DEFAULT 0,
+      notified_1h   TINYINT(1)   NOT NULL DEFAULT 0,
+      created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_dedup (email, dedup_key),
+      KEY idx_email_deadline (email, deadline_at),
+      KEY idx_status (status)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS daily_summaries (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      email        VARCHAR(255) NOT NULL,
+      day          DATE         NOT NULL,
+      summary      LONGTEXT     NOT NULL,
+      generated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_email_day (email, day)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      email      VARCHAR(255) NOT NULL,
+      task_id    INT          NULL,
+      kind       VARCHAR(32)  NOT NULL,
+      channel    VARCHAR(16)  NOT NULL DEFAULT 'line',
+      message    TEXT         NOT NULL,
+      acked      TINYINT(1)   NOT NULL DEFAULT 0,
+      created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_email_created (email, created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
   // 既存テーブルに後付けカラムを足す（MySQL は ADD COLUMN IF NOT EXISTS 非対応のため自前判定）。
-  await addColumnIfMissing("kadai_json", "LONGTEXT NULL");
-  await addColumnIfMissing("yotei_json", "LONGTEXT NULL");
-  await addColumnIfMissing("analyzed_at", "DATETIME NULL");
+  await addColumnIfMissing("transcripts", "kadai_json", "LONGTEXT NULL");
+  await addColumnIfMissing("transcripts", "yotei_json", "LONGTEXT NULL");
+  await addColumnIfMissing("transcripts", "summary", "TEXT NULL");
+  await addColumnIfMissing("transcripts", "analyzed_at", "DATETIME NULL");
 }
 
-async function addColumnIfMissing(column, definition) {
+async function addColumnIfMissing(table, column, definition) {
   const [rows] = await pool.query(
     `SELECT COUNT(*) AS n FROM information_schema.columns
-     WHERE table_schema = DATABASE() AND table_name = 'transcripts' AND column_name = ?`,
-    [column]
+     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+    [table, column]
   );
   if (rows[0].n === 0) {
-    await pool.query(`ALTER TABLE transcripts ADD COLUMN ${column} ${definition}`);
+    await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
+
+// =====================================================================
+// 文字起こし（transcripts）
+// =====================================================================
 
 // テキストを保存（同じ email + filename は上書き）。再アップロード時は古い解析結果を消す。
 // 保存した行の id を返す。
@@ -53,7 +111,7 @@ async function saveTranscript(email, filename, content) {
      VALUES (?, ?, ?)
      ON DUPLICATE KEY UPDATE
        content = VALUES(content),
-       kadai_json = NULL, yotei_json = NULL, analyzed_at = NULL,
+       kadai_json = NULL, yotei_json = NULL, summary = NULL, analyzed_at = NULL,
        updated_at = CURRENT_TIMESTAMP`,
     [email, filename, content]
   );
@@ -64,17 +122,17 @@ async function saveTranscript(email, filename, content) {
   return rows[0] ? rows[0].id : null;
 }
 
-// Gemini の解析結果（課題・予定）を保存する。
-async function saveAnalysis(id, kadai, yotei) {
+// Gemini の解析結果（課題・予定の生JSON＋短い要約）を transcripts 側に保存する。
+async function saveAnalysis(id, kadai, yotei, summary) {
   await pool.query(
     `UPDATE transcripts
-     SET kadai_json = ?, yotei_json = ?, analyzed_at = CURRENT_TIMESTAMP
+     SET kadai_json = ?, yotei_json = ?, summary = ?, analyzed_at = CURRENT_TIMESTAMP
      WHERE id = ?`,
-    [JSON.stringify(kadai || []), JSON.stringify(yotei || []), id]
+    [JSON.stringify(kadai || []), JSON.stringify(yotei || []), summary || null, id]
   );
 }
 
-// 解析結果（課題 or 予定）を取得。kind は "kadai" | "yotei"。
+// 解析結果（課題 or 予定）を transcripts の生JSONから取得。kind は "kadai" | "yotei"。
 async function getAnalysis(id, kind) {
   const column = kind === "yotei" ? "yotei_json" : "kadai_json";
   const [rows] = await pool.query(
@@ -143,13 +201,205 @@ async function getTranscript(id) {
   return rows[0] || null;
 }
 
+// 指定日の本文を新しい順で集める（日次要約の材料）。
+// day は "YYYY-MM-DD"。ファイル名 "YYYY-MM-DD_HH.txt" の日付か、updated_at の日付で一致を見る。
+async function getTranscriptsForDay(email, day) {
+  const [rows] = await pool.query(
+    `SELECT filename, content, summary FROM transcripts
+     WHERE email = ?
+       AND (filename LIKE ? OR DATE(updated_at) = ?)
+     ORDER BY filename ASC, id ASC`,
+    [email, `${day}\\_%`, day]
+  );
+  return rows;
+}
+
+// =====================================================================
+// 課題・予定（tasks）
+// =====================================================================
+
+function dedupKey(email, type, content, deadlineAt) {
+  return crypto
+    .createHash("sha1")
+    .update(`${email}|${type}|${content}|${deadlineAt || ""}`)
+    .digest("hex");
+}
+
+// 抽出した課題・予定を1件ずつ upsert する。
+// item: { type, content, details, deadline_at(null可), date_only }
+// 既存（同一 dedup_key）なら詳細などを更新しつつ、完了状態と通知済みフラグは維持する。
+async function upsertTask(email, item, sourceId) {
+  const type = item.type === "yotei" ? "yotei" : "kadai";
+  const content = String(item.content || "").slice(0, 512);
+  if (!content) return;
+  const deadlineAt = item.deadline_at || null;
+  const key = dedupKey(email, type, content, deadlineAt);
+  await pool.query(
+    `INSERT INTO tasks (email, type, content, details, deadline_at, date_only, source_id, dedup_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       details = VALUES(details),
+       date_only = VALUES(date_only),
+       source_id = COALESCE(tasks.source_id, VALUES(source_id)),
+       updated_at = CURRENT_TIMESTAMP`,
+    [email, type, content, item.details || null, deadlineAt, item.date_only ? 1 : 0, sourceId || null, key]
+  );
+}
+
+async function upsertTasks(email, items, sourceId) {
+  for (const it of items || []) {
+    await upsertTask(email, it, sourceId);
+  }
+}
+
+// 手動でタスクを追加する（Web のフォームなどから）。
+async function addTask(email, { type, content, details, deadline_at, date_only }) {
+  await upsertTask(email, { type, content, details, deadline_at, date_only }, null);
+}
+
+// 未完了タスクのうち deadline が近い順。type 省略で全種。
+async function listUpcomingTasks(email, { includeDone = false, limit = 100 } = {}) {
+  const where = ["email = ?"];
+  const args = [email];
+  if (!includeDone) where.push("status = 'pending'");
+  const [rows] = await pool.query(
+    `SELECT id, type, content, details, deadline_at, date_only, status, notified_1d, notified_1h
+     FROM tasks
+     WHERE ${where.join(" AND ")}
+     ORDER BY (deadline_at IS NULL), deadline_at ASC, id DESC
+     LIMIT ?`,
+    [...args, limit]
+  );
+  return rows;
+}
+
+async function setTaskStatus(id, status) {
+  await pool.query(`UPDATE tasks SET status = ? WHERE id = ?`, [status, id]);
+}
+
+async function deleteTask(id) {
+  await pool.query(`DELETE FROM tasks WHERE id = ?`, [id]);
+}
+
+// リマインド対象を探す。窓 [now, now+within分] に締切があり、まだ該当フラグが立っていない未完了タスク。
+// flagColumn は "notified_1d" | "notified_1h"。
+async function findDueTasks(flagColumn, withinMinutes) {
+  const col = flagColumn === "notified_1h" ? "notified_1h" : "notified_1d";
+  const [rows] = await pool.query(
+    `SELECT id, email, type, content, details, deadline_at, date_only
+     FROM tasks
+     WHERE status = 'pending'
+       AND deadline_at IS NOT NULL
+       AND ${col} = 0
+       AND deadline_at > NOW()
+       AND deadline_at <= DATE_ADD(NOW(), INTERVAL ? MINUTE)
+     ORDER BY deadline_at ASC`,
+    [withinMinutes]
+  );
+  return rows;
+}
+
+async function markNotified(id, flagColumn) {
+  const col = flagColumn === "notified_1h" ? "notified_1h" : "notified_1d";
+  await pool.query(`UPDATE tasks SET ${col} = 1 WHERE id = ?`, [id]);
+}
+
+// =====================================================================
+// 日次要約（daily_summaries）
+// =====================================================================
+
+async function saveDailySummary(email, day, summary) {
+  await pool.query(
+    `INSERT INTO daily_summaries (email, day, summary)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE summary = VALUES(summary), generated_at = CURRENT_TIMESTAMP`,
+    [email, day, summary]
+  );
+}
+
+async function getDailySummary(email, day) {
+  const [rows] = await pool.query(
+    `SELECT day, summary, generated_at FROM daily_summaries
+     WHERE email = ? AND day = ? LIMIT 1`,
+    [email, day]
+  );
+  return rows[0] || null;
+}
+
+async function listDailySummaries(email, limit = 30) {
+  const [rows] = await pool.query(
+    `SELECT day, summary, generated_at FROM daily_summaries
+     WHERE email = ? ORDER BY day DESC LIMIT ?`,
+    [email, limit]
+  );
+  return rows;
+}
+
+// =====================================================================
+// 通知履歴（notifications）
+// =====================================================================
+
+async function recordNotification(email, taskId, kind, channel, message) {
+  const [r] = await pool.query(
+    `INSERT INTO notifications (email, task_id, kind, channel, message)
+     VALUES (?, ?, ?, ?, ?)`,
+    [email, taskId || null, kind, channel || "line", message]
+  );
+  return r.insertId;
+}
+
+// 端末アプリ向け: まだ ack されていない通知を取得（ローカル通知として表示するため）。
+async function pendingNotifications(email, limit = 50) {
+  const [rows] = await pool.query(
+    `SELECT id, task_id, kind, message, created_at FROM notifications
+     WHERE email = ? AND acked = 0
+     ORDER BY created_at ASC LIMIT ?`,
+    [email, limit]
+  );
+  return rows;
+}
+
+async function ackNotifications(email, ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(",");
+  await pool.query(
+    `UPDATE notifications SET acked = 1 WHERE email = ? AND id IN (${placeholders})`,
+    [email, ...ids]
+  );
+}
+
+// 全アカウント横断で email の一覧を返す（スケジューラが回す対象）。
+async function listEmailsWithTasks() {
+  const [rows] = await pool.query(`SELECT DISTINCT email FROM tasks`);
+  return rows.map((r) => r.email);
+}
+
 module.exports = {
   pool,
   ensureSchema,
+  // transcripts
   saveTranscript,
   saveAnalysis,
   getAnalysis,
   getTodaysAnalysisByEmail,
   listTranscripts,
   getTranscript,
+  getTranscriptsForDay,
+  // tasks
+  upsertTasks,
+  addTask,
+  listUpcomingTasks,
+  setTaskStatus,
+  deleteTask,
+  findDueTasks,
+  markNotified,
+  // summaries
+  saveDailySummary,
+  getDailySummary,
+  listDailySummaries,
+  // notifications
+  recordNotification,
+  pendingNotifications,
+  ackNotifications,
+  listEmailsWithTasks,
 };
