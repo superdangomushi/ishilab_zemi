@@ -27,8 +27,18 @@ DB_PASSWORD ?= moneybot
 # これらは Node サーバー(process.env)と mysql クライアント双方へ渡す。
 export DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
 
+# DB とユーザーを「最初の一回だけ」作るための管理者接続。
+# root は使わず、Ubuntu の保守用アカウント(debian-sys-maint)を既定にする。
+# （新規ユーザーが自分自身を作ることはできないため、初回のみ管理者権限が要る）
+# debian.cnf が無い/使えない環境では上書きする。例:
+#   make db MYSQL_ADMIN='mysql -u root -p'   … どうしても root で入れる場合(対話でパスワード)
+MYSQL_ADMIN ?= sudo mysql --defaults-file=/etc/mysql/debian.cnf
+
+# 作成後の通常操作(schema 適用など)は、作った moneybot ユーザー自身で行う。
+MYSQL_APP := mysql -h $(DB_HOST) -P $(DB_PORT) -u $(DB_USER) -p$(DB_PASSWORD)
+
 .DEFAULT_GOAL := help
-.PHONY: help install system-deps db npm-deps run clean
+.PHONY: help install system-deps db db-user db-schema npm-deps run clean
 
 help: ## 使い方を表示
 	@echo "moneybot サーバー Makefile"
@@ -53,16 +63,19 @@ system-deps: ## Node.js + MySQL を導入し MySQL を起動 (要 sudo)
 	sudo systemctl enable --now mysql
 	@echo ">> Node: $$(node -v) / npm: $$(npm -v)"
 
-db: ## DB・専用ユーザーを作成し schema.sql を適用 (要 sudo)
-	@echo ">> DB '$(DB_NAME)' と ユーザー '$(DB_USER)' を作成し schema.sql を適用します"
-	# 管理者はソケット認証(sudo mysql)で接続。識別子はシンプル名、文字列は "..." (既定は非ANSI_QUOTES)。
+db: db-user db-schema ## DB/専用ユーザー作成(管理者・初回のみ) → schema 適用(moneybot ユーザー)
+	@echo ">> DB 準備完了"
+
+db-user: ## DB と専用ユーザー moneybot を作成し権限付与 (初回のみ管理者権限が必要・root不使用)
+	@echo ">> DB '$(DB_NAME)' と ユーザー '$(DB_USER)' を作成します (管理者: $(MYSQL_ADMIN))"
+	# 識別子はシンプル名、文字列は "..." (既定は非ANSI_QUOTES)。
 	# ポイント:
 	#  - mysql2 は 127.0.0.1 へ TCP 接続するが、MySQL 側で localhost に逆引きされることがあるため
 	#    'localhost' と '%' の両方のアカウントを作る。
 	#  - MySQL 8 の既定 caching_sha2_password は非TLSのTCPで失敗しやすいので
 	#    mysql_native_password を明示（MySQL 8.0/Ubuntu LTS で利用可）。
 	#  - 壊れた既存アカウントを避けるため一度 DROP してから作り直す。
-	sudo mysql -e 'CREATE DATABASE IF NOT EXISTS $(DB_NAME) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
+	$(MYSQL_ADMIN) -e 'CREATE DATABASE IF NOT EXISTS $(DB_NAME) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
 	  DROP USER IF EXISTS "$(DB_USER)"@"localhost"; \
 	  DROP USER IF EXISTS "$(DB_USER)"@"%"; \
 	  CREATE USER "$(DB_USER)"@"localhost" IDENTIFIED WITH mysql_native_password BY "$(DB_PASSWORD)"; \
@@ -70,8 +83,10 @@ db: ## DB・専用ユーザーを作成し schema.sql を適用 (要 sudo)
 	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"localhost"; \
 	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"%"; \
 	  FLUSH PRIVILEGES;'
-	sudo mysql $(DB_NAME) < schema.sql
-	@echo ">> DB 準備完了"
+
+db-schema: ## schema.sql を moneybot ユーザー自身で適用 (管理者不要)
+	@echo ">> schema.sql を $(DB_USER) で適用します"
+	$(MYSQL_APP) $(DB_NAME) < schema.sql
 
 npm-deps: ## npm 依存関係をインストール (package-lock.json に厳密一致)
 	npm ci
