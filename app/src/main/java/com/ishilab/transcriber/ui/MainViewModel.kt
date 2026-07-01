@@ -38,6 +38,7 @@ data class UiState(
     val loginInProgress: Boolean = false,
     val loginError: String? = null,
     val sendingFile: String? = null,
+    val sentFiles: Set<String> = emptySet(),
     val sendMessage: String? = null,
     val chatLog: List<ChatMessage> = emptyList(),
     val askInProgress: Boolean = false,
@@ -246,7 +247,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 is MoneybotClient.Result.Ok -> result.message
                 is MoneybotClient.Result.Error -> "送信失敗: ${result.message}"
             }
-            _ui.update { it.copy(sendingFile = null, sendMessage = message) }
+            _ui.update {
+                val sent = if (result is MoneybotClient.Result.Ok) it.sentFiles + item.name else it.sentFiles
+                it.copy(sendingFile = null, sentFiles = sent, sendMessage = message)
+            }
         }
     }
 

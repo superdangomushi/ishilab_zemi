@@ -665,11 +665,18 @@ private fun TranscriptCard(
                     Text("共有")
                 }
                 val sending = ui.sendingFile == item.name
+                val sent = item.name in ui.sentFiles
                 Button(
                     onClick = { onSend(item) },
-                    enabled = ui.account.loggedIn && ui.sendingFile == null
+                    enabled = ui.account.loggedIn && ui.sendingFile == null && !sent
                 ) {
-                    Text(if (sending) "送信中…" else "moneybotへ送信")
+                    Text(
+                        when {
+                            sending -> "送信中…"
+                            sent -> "送信済み"
+                            else -> "moneybotへ送信"
+                        }
+                    )
                 }
             }
             if (expanded) {
