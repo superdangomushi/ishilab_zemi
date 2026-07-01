@@ -56,11 +56,18 @@ system-deps: ## Node.js + MySQL を導入し MySQL を起動 (要 sudo)
 db: ## DB・専用ユーザーを作成し schema.sql を適用 (要 sudo)
 	@echo ">> DB '$(DB_NAME)' と ユーザー '$(DB_USER)' を作成し schema.sql を適用します"
 	# 管理者はソケット認証(sudo mysql)で接続。識別子はシンプル名、文字列は "..." (既定は非ANSI_QUOTES)。
-	# mysql2 は 127.0.0.1 へ TCP 接続するため、ユーザーのホストは '%' で作る
-	# (MySQL では 'localhost'(ソケット) と '127.0.0.1'(TCP) は別扱いのため)。
+	# ポイント:
+	#  - mysql2 は 127.0.0.1 へ TCP 接続するが、MySQL 側で localhost に逆引きされることがあるため
+	#    'localhost' と '%' の両方のアカウントを作る。
+	#  - MySQL 8 の既定 caching_sha2_password は非TLSのTCPで失敗しやすいので
+	#    mysql_native_password を明示（MySQL 8.0/Ubuntu LTS で利用可）。
+	#  - 壊れた既存アカウントを避けるため一度 DROP してから作り直す。
 	sudo mysql -e 'CREATE DATABASE IF NOT EXISTS $(DB_NAME) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
-	  CREATE USER IF NOT EXISTS "$(DB_USER)"@"%" IDENTIFIED BY "$(DB_PASSWORD)"; \
-	  ALTER USER "$(DB_USER)"@"%" IDENTIFIED BY "$(DB_PASSWORD)"; \
+	  DROP USER IF EXISTS "$(DB_USER)"@"localhost"; \
+	  DROP USER IF EXISTS "$(DB_USER)"@"%"; \
+	  CREATE USER "$(DB_USER)"@"localhost" IDENTIFIED WITH mysql_native_password BY "$(DB_PASSWORD)"; \
+	  CREATE USER "$(DB_USER)"@"%" IDENTIFIED WITH mysql_native_password BY "$(DB_PASSWORD)"; \
+	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"localhost"; \
 	  GRANT ALL PRIVILEGES ON $(DB_NAME).* TO "$(DB_USER)"@"%"; \
 	  FLUSH PRIVILEGES;'
 	sudo mysql $(DB_NAME) < schema.sql
