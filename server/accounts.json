@@ -1,6 +1,7 @@
 [
   {
     "email": "demo@moneybot.jp",
-    "token": "demo-token-1234567890"
+    "token": "demo-token-1234567890",
+    "lineUserId": ""
   }
 ]

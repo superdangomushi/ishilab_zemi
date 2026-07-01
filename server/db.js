@@ -91,6 +91,39 @@ async function getAnalysis(id, kind) {
   return { filename: rows[0].filename, items };
 }
 
+// 今日（サーバーのローカル日付）更新された解析済みファイルから、
+// email ごとに課題・予定をまとめて返す。日次サマリ送信用。
+// 返り値: [{ email, kadai: [...], yotei: [...] }]
+async function getTodaysAnalysisByEmail() {
+  const [rows] = await pool.query(
+    `SELECT email, kadai_json, yotei_json
+     FROM transcripts
+     WHERE analyzed_at IS NOT NULL AND DATE(updated_at) = CURDATE()
+     ORDER BY email, updated_at`
+  );
+
+  const byEmail = new Map();
+  for (const row of rows) {
+    if (!byEmail.has(row.email)) {
+      byEmail.set(row.email, { email: row.email, kadai: [], yotei: [] });
+    }
+    const bucket = byEmail.get(row.email);
+    bucket.kadai.push(...parseItems(row.kadai_json));
+    bucket.yotei.push(...parseItems(row.yotei_json));
+  }
+  return [...byEmail.values()];
+}
+
+function parseItems(json) {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) ? arr : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
 // 一覧（中身は含めない。サイズと更新時刻、解析済みかだけ）。
 async function listTranscripts() {
   const [rows] = await pool.query(
@@ -116,6 +149,7 @@ module.exports = {
   saveTranscript,
   saveAnalysis,
   getAnalysis,
+  getTodaysAnalysisByEmail,
   listTranscripts,
   getTranscript,
 };

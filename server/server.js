@@ -10,9 +10,13 @@ const fs = require("fs");
 const path = require("path");
 const db = require("./db");
 const gemini = require("./gemini");
+const line = require("./line");
+const summary = require("./summary");
 
 const PORT = process.env.PORT || 3000;
 const ACCOUNTS_FILE = path.join(__dirname, "accounts.json");
+// 日次サマリの送信時刻（サーバーのローカル時刻）。"HH:MM" 形式。既定 21:00。
+const SUMMARY_TIME = process.env.DAILY_SUMMARY_TIME || "21:00";
 
 const app = express();
 
@@ -230,6 +234,51 @@ app.get("/download/:id", async (req, res) => {
   res.send(row.content);
 });
 
+// 動作確認用に、その場で日次サマリを送れる手動トリガ。
+// accounts.json のいずれかの token を Bearer で要求する（誰でも叩けないように）。
+app.post("/api/send-summary", async (req, res) => {
+  const token = (req.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+  const ok = token && loadAccounts().some((a) => a.token === token);
+  if (!ok) return res.status(401).json({ ok: false, error: "トークンが一致しません" });
+
+  try {
+    const result = await summary.sendDailySummary();
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error("日次サマリ送信に失敗:", e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// "HH:MM" を解釈し、次にその時刻になるまでのミリ秒を返す。
+function msUntilNext(hhmm) {
+  const [h, m] = hhmm.split(":").map((s) => Number(s));
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(h, m, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1); // 今日の時刻を過ぎていれば翌日
+  return next - now;
+}
+
+// 毎日 SUMMARY_TIME に日次サマリを送る。setTimeout を都度貼り直して回す。
+function scheduleDailySummary() {
+  if (!/^\d{1,2}:\d{2}$/.test(SUMMARY_TIME)) {
+    console.error(`DAILY_SUMMARY_TIME の形式が不正です: ${SUMMARY_TIME}（HH:MM で指定）`);
+    return;
+  }
+  const delay = msUntilNext(SUMMARY_TIME);
+  const next = new Date(Date.now() + delay);
+  console.log(`次回の日次サマリ送信: ${next.toLocaleString("ja-JP")}`);
+  setTimeout(async () => {
+    try {
+      await summary.sendDailySummary();
+    } catch (e) {
+      console.error("日次サマリ送信に失敗:", e.message);
+    }
+    scheduleDailySummary(); // 翌日分を予約
+  }, delay);
+}
+
 async function main() {
   try {
     await db.ensureSchema();
@@ -241,6 +290,11 @@ async function main() {
     console.log(`moneybot receiver listening on http://localhost:${PORT}`);
     console.log(`accounts: ${ACCOUNTS_FILE}`);
     console.log(`DB: ${process.env.DB_NAME || "moneybot"}@${process.env.DB_HOST || "localhost"}`);
+    if (line.isConfigured()) {
+      scheduleDailySummary();
+    } else {
+      console.log("LINE_CHANNEL_ACCESS_TOKEN が未設定のため日次サマリは無効です");
+    }
   });
 }
 
