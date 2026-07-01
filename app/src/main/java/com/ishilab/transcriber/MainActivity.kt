@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
@@ -30,6 +31,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -46,12 +49,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ishilab.transcriber.model.WhisperModel
+import com.ishilab.transcriber.net.MoneybotClient
 import com.ishilab.transcriber.service.AudioCaptureService
 import com.ishilab.transcriber.service.ServiceState
 import com.ishilab.transcriber.ui.MainViewModel
@@ -85,6 +90,9 @@ class MainActivity : ComponentActivity() {
                         onLogout = viewModel::logout,
                         onSend = viewModel::sendToMoneybot,
                         onAsk = viewModel::ask,
+                        onLoadTasks = { viewModel.loadTasks() },
+                        onToggleTask = viewModel::toggleTaskDone,
+                        onSetShowDone = { viewModel.loadTasks(it) },
                     )
                 }
             }
@@ -121,66 +129,195 @@ private fun MainScreen(
     onLogout: () -> Unit,
     onSend: (TranscriptItem) -> Unit,
     onAsk: (String) -> Unit,
+    onLoadTasks: () -> Unit,
+    onToggleTask: (MoneybotClient.Task) -> Unit,
+    onSetShowDone: (Boolean) -> Unit,
 ) {
-    val context = LocalContext.current
+    var tab by rememberSaveable { mutableStateOf(0) }
     Scaffold(
         topBar = { TopAppBar(title = { Text("常時録音・ローカル文字起こし") }) }
     ) { padding ->
-        // 画面全体を単一の LazyColumn にして常にスクロール可能にする。
-        // （Column の中に LazyColumn をネストすると上部がスクロールできない問題を回避）
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item { StatusCard(service) }
-
-            item {
-                if (!ui.anyModelReady) {
-                    ModelDownloadCard(ui, onDownload)
-                } else {
-                    ControlRow(service, onStart, onStop)
-                }
+            TabRow(selectedTabIndex = tab) {
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("録音") })
+                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("予定・秘書") })
             }
-
-            service.error?.let { err ->
-                item { Text("エラー: $err", color = MaterialTheme.colorScheme.error) }
+            when (tab) {
+                0 -> RecordingTab(ui, service, onDownload, onStart, onStop, onRefresh, onSend)
+                else -> SecretaryTab(ui, onLogin, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone)
             }
+        }
+    }
+}
 
-            item { MoneybotCard(ui, onLogin, onLogout) }
+/** 録音・文字起こし関連（状態 / 操作 / 受信ファイル）をまとめたタブ。 */
+@Composable
+private fun RecordingTab(
+    ui: UiState,
+    service: ServiceState,
+    onDownload: (WhisperModel) -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRefresh: () -> Unit,
+    onSend: (TranscriptItem) -> Unit,
+) {
+    val context = LocalContext.current
+    // タブ内は単一の LazyColumn にして全体をスクロール可能に保つ。
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { StatusCard(service) }
 
-            if (ui.account.loggedIn) {
-                item { SecretaryCard(ui, onAsk) }
-            }
-
-            ui.sendMessage?.let { msg ->
-                item { Text(msg, style = MaterialTheme.typography.bodySmall) }
-            }
-
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("文字起こしファイル", style = MaterialTheme.typography.titleMedium)
-                    OutlinedButton(onClick = onRefresh) { Text("更新") }
-                }
-            }
-
-            if (ui.transcripts.isEmpty()) {
-                item {
-                    Text("まだファイルがありません。", style = MaterialTheme.typography.bodySmall)
-                }
+        item {
+            if (!ui.anyModelReady) {
+                ModelDownloadCard(ui, onDownload)
             } else {
-                items(ui.transcripts) { item ->
-                    TranscriptCard(item, ui, onSend, context)
+                ControlRow(service, onStart, onStop)
+            }
+        }
+
+        service.error?.let { err ->
+            item { Text("エラー: $err", color = MaterialTheme.colorScheme.error) }
+        }
+
+        ui.sendMessage?.let { msg ->
+            item { Text(msg, style = MaterialTheme.typography.bodySmall) }
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("文字起こしファイル", style = MaterialTheme.typography.titleMedium)
+                OutlinedButton(onClick = onRefresh) { Text("更新") }
+            }
+        }
+
+        if (ui.transcripts.isEmpty()) {
+            item {
+                Text("まだファイルがありません。", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            items(ui.transcripts) { item ->
+                TranscriptCard(item, ui, onSend, context)
+            }
+        }
+    }
+}
+
+/** moneybot 連携（ログイン）・予定/課題の確認・秘書チャットをまとめたタブ。 */
+@Composable
+private fun SecretaryTab(
+    ui: UiState,
+    onLogin: (String, String, String) -> Unit,
+    onLogout: () -> Unit,
+    onAsk: (String) -> Unit,
+    onLoadTasks: () -> Unit,
+    onToggleTask: (MoneybotClient.Task) -> Unit,
+    onSetShowDone: (Boolean) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item { MoneybotCard(ui, onLogin, onLogout) }
+
+        if (!ui.account.loggedIn) {
+            item {
+                Text(
+                    "moneybot.jp にログインすると、予定・課題の確認と秘書チャットが使えます。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            return@LazyColumn
+        }
+
+        // ---- 予定・課題 ----
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("予定・課題", style = MaterialTheme.typography.titleMedium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { onSetShowDone(!ui.showDoneTasks) }) {
+                        Text(if (ui.showDoneTasks) "未完了のみ" else "完了も表示")
+                    }
+                    OutlinedButton(onClick = onLoadTasks) { Text("更新") }
+                }
+            }
+        }
+
+        ui.tasksError?.let { err ->
+            item { Text("取得エラー: $err", color = MaterialTheme.colorScheme.error) }
+        }
+
+        when {
+            ui.tasksLoading && ui.tasks.isEmpty() -> item {
+                Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+            }
+            ui.tasks.isEmpty() -> item {
+                Text("表示できる予定・課題はありません。", style = MaterialTheme.typography.bodySmall)
+            }
+            else -> items(ui.tasks) { task ->
+                TaskCard(task, onToggleTask)
+            }
+        }
+
+        // ---- 秘書チャット ----
+        item { SecretaryCard(ui, onAsk) }
+    }
+}
+
+/** 予定・課題1件のカード。チェックで完了/未完了を切替。 */
+@Composable
+private fun TaskCard(task: MoneybotClient.Task, onToggleTask: (MoneybotClient.Task) -> Unit) {
+    val isYotei = task.type == "yotei"
+    val label = if (isYotei) "予定" else "課題"
+    val labelColor = if (isYotei) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.Top
+        ) {
+            Checkbox(checked = task.done, onCheckedChange = { onToggleTask(task) })
+            Column(modifier = Modifier.padding(start = 4.dp)) {
+                Text("[$label]", color = labelColor, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    task.content,
+                    style = MaterialTheme.typography.bodyLarge,
+                    textDecoration = if (task.done) TextDecoration.LineThrough else null
+                )
+                Text("期限: ${formatDeadline(task.deadline, task.dateOnly)}", style = MaterialTheme.typography.bodySmall)
+                if (task.details.isNotBlank()) {
+                    Text(
+                        task.details,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
     }
+}
+
+/** サーバーの deadline 文字列を "YYYY-MM-DD HH:MM"（日付のみなら日付）へ整形。 */
+private fun formatDeadline(deadline: String?, dateOnly: Boolean): String {
+    if (deadline.isNullOrBlank()) return "未定"
+    val s = deadline.replace('T', ' ')
+    return if (dateOnly) s.take(10) else s.take(16)
 }
 
 @Composable

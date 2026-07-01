@@ -25,6 +25,69 @@ class MoneybotClient {
     /** サーバーから取得したリマインド（端末でローカル通知として出す）。 */
     data class Reminder(val id: Long, val kind: String, val message: String)
 
+    /** 課題/予定の1件。type は "kadai"(課題) / "yotei"(予定)。deadline は未定なら null。 */
+    data class Task(
+        val id: Long,
+        val type: String,
+        val content: String,
+        val details: String,
+        val deadline: String?,
+        val dateOnly: Boolean,
+        val done: Boolean,
+    )
+
+    /** 課題・予定の一覧を取得する。includeDone=true で完了済みも含める。 */
+    fun fetchTasks(
+        baseUrl: String, email: String, token: String, includeDone: Boolean,
+    ): kotlin.Result<List<Task>> {
+        val path = "/api/tasks?done=${if (includeDone) "1" else "0"}" +
+            "&email=${enc(email)}&token=${enc(token)}"
+        val url = endpoint(baseUrl, path)
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                val arr = json.optJSONArray("tasks") ?: JSONArray()
+                (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    Task(
+                        id = o.optLong("id"),
+                        type = o.optString("type"),
+                        content = o.optString("content"),
+                        details = o.optString("details"),
+                        deadline = o.optString("deadline_at").ifBlank { null },
+                        dateOnly = o.optInt("date_only", 0) == 1 || o.optBoolean("date_only", false),
+                        done = o.optString("status") == "done",
+                    )
+                }
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
+    /** 課題・予定の完了/未完了を切り替える。 */
+    fun setTaskDone(
+        baseUrl: String, email: String, token: String, id: Long, done: Boolean,
+    ): Result {
+        val url = endpoint(baseUrl, "/api/tasks/$id/done")
+        val body = JSONObject()
+            .put("email", email).put("token", token)
+            .put("status", if (done) "done" else "pending")
+            .toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            readResult(conn, onOk = "更新しました")
+        }.getOrElse { Result.Error(it.message ?: "更新に失敗しました") }
+    }
+
     /** ログイン照合。アプリで入力したアカウント情報＋トークンがサーバーと一致するか確認する。 */
     fun login(baseUrl: String, email: String, token: String): Result {
         val url = endpoint(baseUrl, "/api/login")

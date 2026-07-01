@@ -40,6 +40,10 @@ data class UiState(
     val sendMessage: String? = null,
     val chatLog: List<ChatMessage> = emptyList(),
     val askInProgress: Boolean = false,
+    val tasks: List<MoneybotClient.Task> = emptyList(),
+    val tasksLoading: Boolean = false,
+    val tasksError: String? = null,
+    val showDoneTasks: Boolean = false,
 ) {
     val anyModelReady: Boolean get() = downloadedModels.isNotEmpty()
 }
@@ -107,6 +111,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _ui.update {
                         it.copy(loginInProgress = false, loginError = null, account = currentAccount())
                     }
+                    loadTasks()
                 }
                 is MoneybotClient.Result.Error -> {
                     _ui.update { it.copy(loginInProgress = false, loginError = result.message) }
@@ -117,7 +122,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         accountStore.logout()
-        _ui.update { it.copy(account = currentAccount(), sendMessage = null) }
+        _ui.update {
+            it.copy(
+                account = currentAccount(), sendMessage = null,
+                tasks = emptyList(), tasksError = null, chatLog = emptyList()
+            )
+        }
+    }
+
+    /** 予定・課題の一覧をサーバーから取得する。 */
+    fun loadTasks(includeDone: Boolean = _ui.value.showDoneTasks) {
+        if (!accountStore.loggedIn) return
+        _ui.update { it.copy(tasksLoading = true, tasksError = null, showDoneTasks = includeDone) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                moneybot.fetchTasks(
+                    accountStore.baseUrl, accountStore.email, accountStore.token, includeDone
+                )
+            }
+            result.fold(
+                onSuccess = { list -> _ui.update { it.copy(tasks = list, tasksLoading = false) } },
+                onFailure = { e ->
+                    _ui.update {
+                        it.copy(tasksLoading = false, tasksError = e.message ?: "取得に失敗しました")
+                    }
+                }
+            )
+        }
+    }
+
+    /** 課題・予定の完了/未完了を切り替え、成功したら一覧を更新する。 */
+    fun toggleTaskDone(task: MoneybotClient.Task) {
+        if (!accountStore.loggedIn) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                moneybot.setTaskDone(
+                    accountStore.baseUrl, accountStore.email, accountStore.token,
+                    task.id, !task.done
+                )
+            }
+            when (result) {
+                is MoneybotClient.Result.Ok -> loadTasks()
+                is MoneybotClient.Result.Error ->
+                    _ui.update { it.copy(tasksError = result.message) }
+            }
+        }
     }
 
     /** 文字起こしファイルを moneybot.jp に送信する。ログイン中のアカウントで送る。 */
@@ -172,6 +221,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update {
                 it.copy(chatLog = it.chatLog + ChatMessage(reply, false), askInProgress = false)
             }
+            // 「予定入れといて」等でタスクが増減した可能性があるので一覧を更新。
+            val applied = result.getOrNull()?.applied ?: 0
+            if (applied > 0) loadTasks()
         }
     }
 
