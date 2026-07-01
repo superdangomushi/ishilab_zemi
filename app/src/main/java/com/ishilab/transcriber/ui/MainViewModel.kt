@@ -29,6 +29,7 @@ data class AccountState(
 
 data class UiState(
     val downloadedModels: Set<WhisperModel> = emptySet(),
+    val selectedModel: WhisperModel? = null,
     val downloading: WhisperModel? = null,
     val downloadProgress: Float = 0f,
     val downloadError: String? = null,
@@ -69,7 +70,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ?.sortedByDescending { it.name }
             ?.map { TranscriptItem(it.name, it.absolutePath, it.length()) }
             ?: emptyList()
-        _ui.update { it.copy(downloadedModels = downloaded, transcripts = items) }
+        _ui.update {
+            it.copy(
+                downloadedModels = downloaded,
+                selectedModel = modelManager.activeModel(),
+                transcripts = items,
+            )
+        }
+    }
+
+    /** 文字起こしに使うモデルを選び直す（ダウンロード済みのモデルのみ）。 */
+    fun selectModel(model: WhisperModel) {
+        if (!modelManager.isDownloaded(model)) return
+        modelManager.setSelectedModel(model)
+        _ui.update { it.copy(selectedModel = model) }
     }
 
     fun download(model: WhisperModel) {
@@ -82,6 +96,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.update { it.copy(downloadProgress = if (p < 0f) -1f else p) }
                     }
                 }
+                // 選択が未設定なら、今DLしたモデルを既定の使用モデルにする。
+                if (modelManager.selectedModel() == null) modelManager.setSelectedModel(model)
                 _ui.update { it.copy(downloading = null) }
                 refresh()
             } catch (e: Exception) {

@@ -277,8 +277,8 @@ class AudioCaptureService : Service() {
     // ---- 文字起こしワーカー -------------------------------------------------
 
     private fun runWorker() {
-        // モデル読み込み
-        val model = WhisperModel.entries.firstOrNull { modelManager.isDownloaded(it) }
+        // モデル読み込み（利用者が選択したモデルを優先。未DLならDL済みの先頭）
+        val model = modelManager.activeModel()
         if (model == null) {
             pushState { it.copy(error = "モデル未ダウンロード") }
             stopEverything()

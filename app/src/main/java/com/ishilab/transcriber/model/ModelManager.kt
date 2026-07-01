@@ -26,11 +26,34 @@ class ModelManager(context: Context) {
     private val modelsDir: File =
         File(context.filesDir, "models").apply { mkdirs() }
 
+    private val prefs =
+        context.getSharedPreferences("model_prefs", Context.MODE_PRIVATE)
+
     fun modelFile(model: WhisperModel): File = File(modelsDir, model.fileName)
 
     fun isDownloaded(model: WhisperModel): Boolean {
         val f = modelFile(model)
         return f.exists() && f.length() > 1_000_000L // 破損/中断検出の簡易チェック
+    }
+
+    /** 利用者が選んだモデル（永続化）。未設定なら null。 */
+    fun selectedModel(): WhisperModel? =
+        prefs.getString(KEY_SELECTED, null)?.let { name ->
+            WhisperModel.entries.firstOrNull { it.name == name }
+        }
+
+    /** 使用するモデルを記録する。 */
+    fun setSelectedModel(model: WhisperModel) {
+        prefs.edit().putString(KEY_SELECTED, model.name).apply()
+    }
+
+    /**
+     * 実際に文字起こしに使うモデルを解決する。
+     * 選択済みかつダウンロード済みならそれを、無ければダウンロード済みの先頭を返す。
+     */
+    fun activeModel(): WhisperModel? {
+        selectedModel()?.let { if (isDownloaded(it)) return it }
+        return WhisperModel.entries.firstOrNull { isDownloaded(it) }
     }
 
     /**
@@ -75,6 +98,7 @@ class ModelManager(context: Context) {
 
     companion object {
         private const val TAG = "ModelManager"
+        private const val KEY_SELECTED = "selected_model"
         val DEFAULT = WhisperModel.BASE
     }
 }

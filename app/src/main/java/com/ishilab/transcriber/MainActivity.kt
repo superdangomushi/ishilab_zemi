@@ -29,6 +29,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
                         ui = ui,
                         service = service,
                         onDownload = viewModel::download,
+                        onSelectModel = viewModel::selectModel,
                         onStart = { AudioCaptureService.start(this) },
                         onStop = { AudioCaptureService.stop(this) },
                         onRefresh = viewModel::refresh,
@@ -122,6 +124,7 @@ private fun MainScreen(
     ui: UiState,
     service: ServiceState,
     onDownload: (WhisperModel) -> Unit,
+    onSelectModel: (WhisperModel) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
@@ -147,7 +150,7 @@ private fun MainScreen(
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("予定・秘書") })
             }
             when (tab) {
-                0 -> RecordingTab(ui, service, onDownload, onStart, onStop, onRefresh, onSend)
+                0 -> RecordingTab(ui, service, onDownload, onSelectModel, onStart, onStop, onRefresh, onSend)
                 else -> SecretaryTab(ui, onLogin, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone)
             }
         }
@@ -160,6 +163,7 @@ private fun RecordingTab(
     ui: UiState,
     service: ServiceState,
     onDownload: (WhisperModel) -> Unit,
+    onSelectModel: (WhisperModel) -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
@@ -175,12 +179,10 @@ private fun RecordingTab(
     ) {
         item { StatusCard(service) }
 
-        item {
-            if (!ui.anyModelReady) {
-                ModelDownloadCard(ui, onDownload)
-            } else {
-                ControlRow(service, onStart, onStop)
-            }
+        item { ModelCard(ui, onDownload, onSelectModel) }
+
+        if (ui.anyModelReady) {
+            item { ControlRow(service, onStart, onStop) }
         }
 
         service.error?.let { err ->
@@ -389,36 +391,79 @@ private fun ControlRow(service: ServiceState, onStart: () -> Unit, onStop: () ->
     )
 }
 
+/**
+ * 文字起こしモデルのカード。ダウンロード済みモデルはラジオで選び直せ、
+ * 未ダウンロードのモデルはこの場でダウンロードできる。
+ */
 @Composable
-private fun ModelDownloadCard(ui: UiState, onDownload: (WhisperModel) -> Unit) {
+private fun ModelCard(
+    ui: UiState,
+    onDownload: (WhisperModel) -> Unit,
+    onSelectModel: (WhisperModel) -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("初回はモデルのダウンロードが必要です", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "ダウンロード後はオフラインで動作します。日本語は base 以上を推奨。",
-                style = MaterialTheme.typography.bodySmall
-            )
-            if (ui.downloading != null) {
-                Text("ダウンロード中: ${ui.downloading.displayName}")
-                if (ui.downloadProgress >= 0f) {
-                    LinearProgressIndicator(
-                        progress = { ui.downloadProgress },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            Text("文字起こしモデル", style = MaterialTheme.typography.titleMedium)
+            if (!ui.anyModelReady) {
+                Text(
+                    "初回はモデルのダウンロードが必要です。DL後はオフラインで動作。日本語は base 以上を推奨。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            WhisperModel.entries.forEach { model ->
+                val downloaded = model in ui.downloadedModels
+                val selected = ui.selectedModel == model
+                val isDownloading = ui.downloading == model
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(model.displayName, style = MaterialTheme.typography.bodyLarge)
+                        Text("約${model.approxMb}MB", style = MaterialTheme.typography.bodySmall)
+                    }
+                    when {
+                        isDownloading -> CircularProgressIndicator(
+                            modifier = Modifier.height(20.dp),
+                            strokeWidth = 2.dp
+                        )
+                        downloaded -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = { onSelectModel(model) }
+                            )
+                            Text(
+                                if (selected) "使用中" else "使用",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        else -> Button(
+                            onClick = { onDownload(model) },
+                            enabled = ui.downloading == null
+                        ) { Text("ダウンロード") }
+                    }
                 }
-            } else {
-                WhisperModel.entries.forEach { model ->
-                    Button(
-                        onClick = { onDownload(model) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("${model.displayName}  約${model.approxMb}MB") }
+                if (isDownloading) {
+                    if (ui.downloadProgress >= 0f) {
+                        LinearProgressIndicator(
+                            progress = { ui.downloadProgress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
                 }
             }
+
             ui.downloadError?.let {
                 Text("ダウンロード失敗: $it", color = MaterialTheme.colorScheme.error)
             }
+            Text(
+                "※ 録音中に変更した場合は次回の録音開始から反映されます。",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
