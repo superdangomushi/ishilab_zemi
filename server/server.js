@@ -157,6 +157,35 @@ app.post("/api/login", (req, res) => {
   res.json({ ok: true, email: account.email, token: account.token, line: Boolean(account.lineUserId) });
 });
 
+// パスワード変更（自己登録ユーザーのみ）。現在のパスワードで本人確認する。
+app.post("/api/change-password", (req, res) => {
+  const account = authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const currentPassword = String(req.body?.currentPassword || "");
+  const newPassword = String(req.body?.newPassword || "");
+  if (newPassword.length < 6) {
+    return res.status(400).json({ ok: false, error: "新しいパスワードは6文字以上にしてください" });
+  }
+  const users = loadUsers();
+  const u = users.find((x) => x.email === account.email);
+  if (!u) {
+    return res.status(400).json({ ok: false, error: "このアカウントはパスワード変更に対応していません" });
+  }
+  if (!verifyPassword(currentPassword, u.salt, u.hash)) {
+    return res.status(401).json({ ok: false, error: "現在のパスワードが違います" });
+  }
+  const { salt, hash } = hashPassword(newPassword);
+  u.salt = salt;
+  u.hash = hash;
+  try {
+    saveUsers(users);
+  } catch (e) {
+    console.error("users.json 保存に失敗:", e.message);
+    return res.status(500).json({ ok: false, error: "保存に失敗しました" });
+  }
+  res.json({ ok: true });
+});
+
 // 文字起こしテキストの受信 → MySQL に保存 → Gemini で課題/予定/要約を抽出。
 app.post("/api/upload", async (req, res) => {
   const email = req.get("X-Account-Email");
@@ -614,6 +643,13 @@ function renderDashboard(tableRows) {
                 max-height:85vh; display:flex; flex-direction:column; }
     .modalpre { white-space:pre-wrap; word-break:break-word; overflow:auto; margin:.6rem 0 0;
                 font-size:.9rem; line-height:1.5; }
+    .tabs { display:flex; gap:.25rem; flex-wrap:wrap; }
+    .tab { background:#e2e8f0; color:#0f172a; }
+    .tab.active { background:var(--accent); color:#fff; }
+    .panel { display:none; }
+    .panel.active { display:block; }
+    .login-wrap { max-width:420px; margin:2rem auto; text-align:center; }
+    hr { border:none; border-top:1px solid #e2e8f0; margin:1rem 0; }
   </style>
 </head>
 <body>
@@ -622,68 +658,93 @@ function renderDashboard(tableRows) {
     <p>常時録音から課題・予定を拾い、締切前に LINE で警告。聞けば答え、頼めば登録します。</p>
   </header>
   <main>
-    <section class="card" id="authCard">
-      <h2>ログイン / 新規登録</h2>
-      <div class="grid2">
-        <input id="email" placeholder="メールアドレス" autocomplete="username">
-        <input id="password" placeholder="パスワード(6文字以上)" type="password" autocomplete="current-password"
-               onkeydown="if(event.key==='Enter')login()">
-      </div>
-      <div class="row" style="margin-top:.5rem">
-        <button onclick="login()">ログイン</button>
-        <button class="ghost" onclick="register()">新規登録</button>
-        <span id="authState" class="muted"></span>
-      </div>
-      <p class="muted">初めての方は「新規登録」。以降はメールとパスワードでログインできます。</p>
-    </section>
-
-    <div id="app" style="display:none">
-    <section class="card">
-      <div class="row" style="justify-content:space-between">
-        <span id="whoami" class="muted"></span>
-        <button class="ghost small" onclick="logout()">ログアウト</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>💬 秘書に聞く / 頼む</h2>
-      <div id="chatlog" class="chatlog"></div>
-      <div class="row">
-        <input id="q" placeholder="例）今日の予定は？ / 来週月曜10時にゼミ入れといて"
-               onkeydown="if(event.key==='Enter')ask()">
-        <button onclick="ask()">送信</button>
-      </div>
-      <p class="muted">「〜の予定入れといて」「〇〇の宿題が出てるらしい、登録して」「〇〇終わった」も実行できます。</p>
-    </section>
-
-    <section class="card">
-      <h2>⏰ 締切が近い課題・予定</h2>
-      <div id="tasks"><p class="muted">ログイン情報を入れると表示されます。</p></div>
-      <details style="margin-top:.6rem">
-        <summary class="muted">手動で追加</summary>
-        <div class="grid2" style="margin-top:.5rem">
-          <select id="t_type"><option value="kadai">課題</option><option value="yotei">予定</option></select>
-          <input id="t_deadline" placeholder="期限 2026-07-05 17:00（任意）">
+    <!-- ログイン画面: ボタンのみ。押すとフォームが出る -->
+    <div id="login">
+      <section class="card login-wrap">
+        <h2 style="margin:.2rem 0">moneybot</h2>
+        <p class="muted">常時録音から課題・予定を整理し、締切前に通知します。</p>
+        <div class="row" style="justify-content:center; margin-top:1rem">
+          <button onclick="showForm('login')">ログイン</button>
+          <button class="ghost" onclick="showForm('register')">新規登録</button>
         </div>
-        <input id="t_content" placeholder="内容" style="margin-top:.5rem">
-        <input id="t_details" placeholder="詳細（任意）" style="margin-top:.5rem">
-        <button style="margin-top:.5rem" onclick="addTask()">追加</button>
-      </details>
-    </section>
+        <div id="authForm" style="display:none; margin-top:1.2rem; text-align:left">
+          <h3 id="formTitle" style="margin:.2rem 0 .6rem"></h3>
+          <input id="email" placeholder="メールアドレス" autocomplete="username" style="margin-bottom:.5rem">
+          <input id="password" type="password" placeholder="パスワード(6文字以上)"
+                 autocomplete="current-password" onkeydown="if(event.key==='Enter')submitAuth()">
+          <div class="row" style="margin-top:.6rem">
+            <button id="submitBtn" onclick="submitAuth()"></button>
+            <button class="ghost small" onclick="hideForm()">戻る</button>
+          </div>
+          <p id="authState" class="muted"></p>
+        </div>
+      </section>
+    </div>
 
-    <section class="card">
-      <h2>📅 今日の要約</h2>
-      <div id="summary"><p class="muted">ログイン情報を入れると表示されます。</p></div>
-      <button class="ghost small" style="margin-top:.5rem" onclick="genSummary()">今すぐ生成し直す</button>
-    </section>
+    <!-- アプリ本体: ログイン後にタブ表示 -->
+    <div id="app" style="display:none">
+      <nav class="tabs">
+        <button class="tab" data-tab="chat" onclick="showTab('chat')">秘書</button>
+        <button class="tab" data-tab="tasks" onclick="showTab('tasks')">予定・課題</button>
+        <button class="tab" data-tab="summary" onclick="showTab('summary')">今日の要約</button>
+        <button class="tab" data-tab="files" onclick="showTab('files')">ファイル</button>
+        <button class="tab" data-tab="account" onclick="showTab('account')">アカウント</button>
+      </nav>
 
-    <section class="card">
-      <h2>📂 受信した文字起こしファイル</h2>
-      <table>
-        <thead><tr><th>アカウント</th><th>ファイル名</th><th>文字数</th><th>更新</th><th></th><th>課題/予定</th></tr></thead>
-        <tbody>${tableRows}</tbody>
-      </table>
-    </section>
+      <section class="card panel" data-panel="chat">
+        <h2>💬 秘書に聞く / 頼む</h2>
+        <div id="chatlog" class="chatlog"></div>
+        <div class="row">
+          <input id="q" placeholder="例）今日の予定は？ / 来週月曜10時にゼミ入れといて"
+                 onkeydown="if(event.key==='Enter')ask()">
+          <button onclick="ask()">送信</button>
+        </div>
+        <p class="muted">「〜の予定入れといて」「〇〇の宿題が出てるらしい、登録して」「〇〇終わった」も実行できます。</p>
+      </section>
+
+      <section class="card panel" data-panel="tasks">
+        <h2>⏰ 締切が近い課題・予定</h2>
+        <div id="tasks"><p class="muted">読み込み中…</p></div>
+        <details style="margin-top:.6rem">
+          <summary class="muted">手動で追加</summary>
+          <div class="grid2" style="margin-top:.5rem">
+            <select id="t_type"><option value="kadai">課題</option><option value="yotei">予定</option></select>
+            <input id="t_deadline" placeholder="期限 2026-07-05 17:00（任意）">
+          </div>
+          <input id="t_content" placeholder="内容" style="margin-top:.5rem">
+          <input id="t_details" placeholder="詳細（任意）" style="margin-top:.5rem">
+          <button style="margin-top:.5rem" onclick="addTask()">追加</button>
+        </details>
+      </section>
+
+      <section class="card panel" data-panel="summary">
+        <h2>📅 今日の要約</h2>
+        <div id="summary"><p class="muted">読み込み中…</p></div>
+        <button class="ghost small" style="margin-top:.5rem" onclick="genSummary()">今すぐ生成し直す</button>
+      </section>
+
+      <section class="card panel" data-panel="files">
+        <h2>📂 受信した文字起こしファイル</h2>
+        <table>
+          <thead><tr><th>アカウント</th><th>ファイル名</th><th>文字数</th><th>更新</th><th></th><th>課題/予定</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </section>
+
+      <section class="card panel" data-panel="account">
+        <h2>👤 アカウント</h2>
+        <p>ログイン中: <strong id="accEmail"></strong></p>
+        <hr>
+        <h3 style="font-size:.95rem; margin:.2rem 0 .6rem">パスワード変更</h3>
+        <input id="curpw" type="password" placeholder="現在のパスワード" autocomplete="current-password" style="margin-bottom:.5rem">
+        <input id="newpw" type="password" placeholder="新しいパスワード(6文字以上)" autocomplete="new-password">
+        <div class="row" style="margin-top:.6rem">
+          <button onclick="changePassword()">変更する</button>
+          <span id="pwState" class="muted"></span>
+        </div>
+        <hr>
+        <button class="ghost" onclick="logout()">ログアウト</button>
+      </section>
     </div><!-- /#app -->
   </main>
 
@@ -703,37 +764,51 @@ function renderDashboard(tableRows) {
     function headers(){ return { 'Content-Type':'application/json',
       'X-Account-Email': auth.email||'', 'Authorization':'Bearer '+(auth.token||'') }; }
 
-    function initAuth(){
-      if(auth.email && auth.token){ $('email').value = auth.email; onAuthed(); }
+    // ---- 認証・画面切替 ----
+    let authMode = 'login';
+    function showForm(mode){
+      authMode = mode;
+      $('formTitle').textContent = mode==='register' ? '新規登録' : 'ログイン';
+      $('submitBtn').textContent = mode==='register' ? '登録する' : 'ログイン';
+      $('authForm').style.display = ''; $('authState').textContent = '';
+      $('email').focus();
     }
-    function onAuthed(){
-      $('app').style.display = '';
-      $('whoami').textContent = 'ログイン中: ' + (auth.email||'');
-      $('authState').textContent = '✓ ' + (auth.email||'');
-      loadAll();
-    }
-    async function login(){
+    function hideForm(){ $('authForm').style.display='none'; $('authState').textContent=''; }
+    async function submitAuth(){
       const email = $('email').value.trim(), password = $('password').value;
       if(!email || !password){ $('authState').textContent='メールとパスワードを入力'; return; }
-      const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      const path = authMode==='register' ? '/api/register' : '/api/login';
+      const r = await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
         body: JSON.stringify({email, password})});
       const j = await r.json();
       if(j.ok){ auth = {email:j.email, token:j.token}; localStorage.setItem('mb_auth', JSON.stringify(auth)); onAuthed(); }
-      else $('authState').textContent = '✗ ' + (j.error||'ログイン失敗');
+      else $('authState').textContent = '✗ ' + (j.error || (authMode==='register'?'登録失敗':'ログイン失敗'));
     }
-    async function register(){
-      const email = $('email').value.trim(), password = $('password').value;
-      if(!email || !password){ $('authState').textContent='メールとパスワードを入力'; return; }
-      const r = await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({email, password})});
-      const j = await r.json();
-      if(j.ok){ auth = {email:j.email, token:j.token}; localStorage.setItem('mb_auth', JSON.stringify(auth));
-        $('authState').textContent='✓ 登録しました'; onAuthed(); }
-      else $('authState').textContent = '✗ ' + (j.error||'登録失敗');
+    function showTab(name){
+      document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active', b.dataset.tab===name));
+      document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active', p.dataset.panel===name));
+    }
+    function initAuth(){ if(auth.email && auth.token) onAuthed(); }
+    function onAuthed(){
+      $('login').style.display = 'none';
+      $('app').style.display = '';
+      $('accEmail').textContent = auth.email || '';
+      showTab('chat');
+      loadAll();
     }
     function logout(){
       auth = {}; localStorage.removeItem('mb_auth');
-      $('app').style.display = 'none'; $('password').value=''; $('authState').textContent='ログアウトしました';
+      $('app').style.display = 'none'; $('login').style.display = '';
+      $('password').value = ''; hideForm();
+    }
+    async function changePassword(){
+      const currentPassword = $('curpw').value, newPassword = $('newpw').value;
+      if(!currentPassword || !newPassword){ $('pwState').textContent='両方入力してください'; return; }
+      const r = await fetch('/api/change-password',{method:'POST',headers:headers(),
+        body: JSON.stringify({currentPassword, newPassword})});
+      const j = await r.json();
+      if(j.ok){ $('pwState').textContent='✓ 変更しました'; $('curpw').value=$('newpw').value=''; }
+      else $('pwState').textContent = '✗ ' + (j.error||'変更失敗');
     }
     function loadAll(){ loadTasks(); loadSummary(); }
 
