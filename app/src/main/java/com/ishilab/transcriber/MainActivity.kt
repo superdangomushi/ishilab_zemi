@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,11 +34,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -116,43 +120,59 @@ private fun MainScreen(
     onLogout: () -> Unit,
     onSend: (TranscriptItem) -> Unit,
 ) {
+    val context = LocalContext.current
     Scaffold(
         topBar = { TopAppBar(title = { Text("常時録音・ローカル文字起こし") }) }
     ) { padding ->
-        Column(
+        // 画面全体を単一の LazyColumn にして常にスクロール可能にする。
+        // （Column の中に LazyColumn をネストすると上部がスクロールできない問題を回避）
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            StatusCard(service)
+            item { StatusCard(service) }
 
-            if (!ui.anyModelReady) {
-                ModelDownloadCard(ui, onDownload)
+            item {
+                if (!ui.anyModelReady) {
+                    ModelDownloadCard(ui, onDownload)
+                } else {
+                    ControlRow(service, onStart, onStop)
+                }
+            }
+
+            service.error?.let { err ->
+                item { Text("エラー: $err", color = MaterialTheme.colorScheme.error) }
+            }
+
+            item { MoneybotCard(ui, onLogin, onLogout) }
+
+            ui.sendMessage?.let { msg ->
+                item { Text(msg, style = MaterialTheme.typography.bodySmall) }
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("文字起こしファイル", style = MaterialTheme.typography.titleMedium)
+                    OutlinedButton(onClick = onRefresh) { Text("更新") }
+                }
+            }
+
+            if (ui.transcripts.isEmpty()) {
+                item {
+                    Text("まだファイルがありません。", style = MaterialTheme.typography.bodySmall)
+                }
             } else {
-                ControlRow(service, onStart, onStop)
+                items(ui.transcripts) { item ->
+                    TranscriptCard(item, ui, onSend, context)
+                }
             }
-
-            service.error?.let {
-                Text("エラー: $it", color = MaterialTheme.colorScheme.error)
-            }
-
-            MoneybotCard(ui, onLogin, onLogout)
-
-            ui.sendMessage?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall)
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("文字起こしファイル", style = MaterialTheme.typography.titleMedium)
-                OutlinedButton(onClick = onRefresh) { Text("更新") }
-            }
-            TranscriptList(ui, onSend)
         }
     }
 }
@@ -167,6 +187,10 @@ private fun StatusCard(service: ServiceState) {
                 else -> "録音・文字起こし中"
             }
             Text("状態: $status", style = MaterialTheme.typography.titleMedium)
+            if (service.active) {
+                val elapsedMs = rememberRecordingElapsed(service)
+                Text("録音時間: ${formatDuration(elapsedMs)}")
+            }
             service.modelName?.let { Text("モデル: $it") }
             Text("処理済チャンク: ${service.chunksDone}  待機: ${service.queueSize}  破棄: ${service.dropped}")
             service.currentFile?.let { Text("出力中: $it") }
@@ -181,6 +205,33 @@ private fun StatusCard(service: ServiceState) {
             }
         }
     }
+}
+
+/**
+ * 録音の合計継続時間(ms)を返し、録音中は毎秒再計算してカウントアップさせる。
+ * 一時停止中は積算値で止まる。
+ */
+@Composable
+private fun rememberRecordingElapsed(service: ServiceState): Long {
+    var now by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(service.active, service.recordingStartedElapsed) {
+        while (service.active) {
+            now = SystemClock.elapsedRealtime()
+            delay(1000)
+        }
+    }
+    val running = if (service.recordingStartedElapsed > 0L) {
+        (now - service.recordingStartedElapsed).coerceAtLeast(0L)
+    } else 0L
+    return service.accumulatedRecordMs + running
+}
+
+private fun formatDuration(ms: Long): String {
+    val totalSec = ms / 1000
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
 }
 
 @Composable
@@ -302,31 +353,27 @@ private fun MoneybotLoginForm(
 }
 
 @Composable
-private fun TranscriptList(ui: UiState, onSend: (TranscriptItem) -> Unit) {
-    val context = LocalContext.current
-    if (ui.transcripts.isEmpty()) {
-        Text("まだファイルがありません。", style = MaterialTheme.typography.bodySmall)
-        return
-    }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(ui.transcripts) { item ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text(item.name, style = MaterialTheme.typography.titleSmall)
-                    Text("${item.sizeBytes} bytes", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { shareFile(context, item.path) }) {
-                            Text("共有")
-                        }
-                        val sending = ui.sendingFile == item.name
-                        Button(
-                            onClick = { onSend(item) },
-                            enabled = ui.account.loggedIn && ui.sendingFile == null
-                        ) {
-                            Text(if (sending) "送信中…" else "moneybotへ送信")
-                        }
-                    }
+private fun TranscriptCard(
+    item: TranscriptItem,
+    ui: UiState,
+    onSend: (TranscriptItem) -> Unit,
+    context: android.content.Context,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(item.name, style = MaterialTheme.typography.titleSmall)
+            Text("${item.sizeBytes} bytes", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { shareFile(context, item.path) }) {
+                    Text("共有")
+                }
+                val sending = ui.sendingFile == item.name
+                Button(
+                    onClick = { onSend(item) },
+                    enabled = ui.account.loggedIn && ui.sendingFile == null
+                ) {
+                    Text(if (sending) "送信中…" else "moneybotへ送信")
                 }
             }
         }

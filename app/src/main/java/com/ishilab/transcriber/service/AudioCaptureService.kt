@@ -16,6 +16,7 @@ import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -30,6 +31,8 @@ import com.ishilab.transcriber.transcribe.WhisperEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -55,6 +58,10 @@ class AudioCaptureService : Service() {
     private val recording = AtomicBoolean(false)   // マイク稼働中か
     private val serviceActive = AtomicBoolean(false) // サービス全体が生存しているか
 
+    // 開始/一時停止/再開/終了の各処理はブロッキング(スレッドjoin等)を含むため、
+    // メインスレッドをふさいで ANR を起こさないよう専用スレッドで直列実行する。
+    private val control: ExecutorService = Executors.newSingleThreadExecutor()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -67,12 +74,20 @@ class AudioCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> start()
-            ACTION_PAUSE -> pauseMic()
-            ACTION_RESUME -> resumeMic()
-            ACTION_STOP -> stopEverything()
-            else -> start()
+        // startForegroundService() の「5秒以内に startForeground()」制約を満たすため、
+        // どのアクションでもまずフォアグラウンド化だけは同期的に行う（通知構築のみで軽量）。
+        startForegroundCompat()
+
+        val action = intent?.action ?: ACTION_START
+        // 実処理はブロッキングを含むので専用スレッドへ。メインスレッドは即座に返す。
+        control.execute {
+            when (action) {
+                ACTION_START -> start()
+                ACTION_PAUSE -> pauseMic()
+                ACTION_RESUME -> resumeMic()
+                ACTION_STOP -> stopEverything()
+                else -> start()
+            }
         }
         return START_STICKY
     }
@@ -83,13 +98,18 @@ class AudioCaptureService : Service() {
         if (serviceActive.get()) return
         serviceActive.set(true)
 
-        startForegroundCompat()
         if (!wakeLock.isHeld) wakeLock.acquire()
 
+        // 新しいセッション開始。録音時間の計測をリセット。
+        pushState {
+            it.copy(
+                active = true, paused = false, error = null,
+                accumulatedRecordMs = 0L, recordingStartedElapsed = 0L
+            )
+        }
         // モデル読み込み＋ワーカー起動はバックグラウンドで
         workerThread = Thread({ runWorker() }, "transcribe-worker").also { it.start() }
         startRecording()
-        pushState { it.copy(active = true, paused = false, error = null) }
     }
 
     private fun pauseMic() {
@@ -106,25 +126,55 @@ class AudioCaptureService : Service() {
     }
 
     private fun stopEverything() {
-        serviceActive.set(false)
-        stopRecording()
-        // ワーカーに終了を通知（poison pill）。キューが満杯でも確実に止めるため interrupt も行う。
-        chunkQueue.offer(POISON)
-        workerThread?.let { t ->
-            t.join(5_000)
-            if (t.isAlive) t.interrupt()
+        val wasActive = serviceActive.getAndSet(false)
+        recording.set(false)
+        if (wasActive) {
+            accrueRecordingTime()
+            // ワーカーに終了を通知（poison pill）。キューが満杯でも確実に止めるため clear もする。
+            chunkQueue.clear()
+            chunkQueue.offer(POISON)
+            recordThread?.join(3_000)
+            recordThread = null
+            workerThread?.let { t ->
+                t.join(5_000)
+                if (t.isAlive) t.interrupt()
+            }
+            workerThread = null
+            engine?.release()
+            engine = null
+            if (wakeLock.isHeld) wakeLock.release()
         }
-        workerThread = null
-        engine?.release()
-        engine = null
-        if (wakeLock.isHeld) wakeLock.release()
-        pushState { it.copy(active = false, paused = false) }
+        pushState { it.copy(active = false, paused = false, recordingStartedElapsed = 0L) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
+    /** 録音中に経過した時間を積算し、計測を停止状態にする。 */
+    private fun accrueRecordingTime() {
+        pushState {
+            if (it.recordingStartedElapsed > 0L) {
+                it.copy(
+                    accumulatedRecordMs = it.accumulatedRecordMs +
+                        (SystemClock.elapsedRealtime() - it.recordingStartedElapsed),
+                    recordingStartedElapsed = 0L
+                )
+            } else it
+        }
+    }
+
     override fun onDestroy() {
-        if (serviceActive.get()) stopEverything()
+        // 外部要因で破棄された場合の後始末。メインスレッドをブロックしないよう control で。
+        if (serviceActive.getAndSet(false)) {
+            recording.set(false)
+            chunkQueue.offer(POISON)
+            control.execute {
+                recordThread?.join(2_000); recordThread = null
+                workerThread?.join(2_000); workerThread = null
+                engine?.release(); engine = null
+                if (wakeLock.isHeld) wakeLock.release()
+            }
+        }
+        control.shutdown()
         super.onDestroy()
     }
 
@@ -139,11 +189,13 @@ class AudioCaptureService : Service() {
             return
         }
         recording.set(true)
+        pushState { it.copy(recordingStartedElapsed = SystemClock.elapsedRealtime()) }
         recordThread = Thread({ recordLoop() }, "audio-record").also { it.start() }
     }
 
     private fun stopRecording() {
         recording.set(false)
+        accrueRecordingTime()
         recordThread?.join(3_000)
         recordThread = null
     }
@@ -391,4 +443,8 @@ data class ServiceState(
     val lastText: String = "",
     val currentFile: String? = null,
     val error: String? = null,
+    /** 現在のマイク稼働区間の開始時刻(elapsedRealtime)。0 のとき計測停止中。 */
+    val recordingStartedElapsed: Long = 0L,
+    /** 過去の稼働区間の積算録音時間(ms)。一時停止をまたいだ合計に使う。 */
+    val accumulatedRecordMs: Long = 0L,
 )
