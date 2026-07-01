@@ -431,6 +431,13 @@ private fun StatusCard(service: ServiceState) {
             }
             service.modelName?.let { Text("モデル: $it") }
             Text("処理済チャンク: ${service.chunksDone}  待機: ${service.queueSize}  破棄: ${service.dropped}")
+            if (service.overloaded) {
+                Text(
+                    "⚠ 端末の処理が追いついていません。より軽いモデル（tiny/base）を選ぶと改善します。",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             service.currentFile?.let { Text("出力中: $it") }
             if (service.lastText.isNotBlank()) {
                 Spacer(Modifier.height(4.dp))

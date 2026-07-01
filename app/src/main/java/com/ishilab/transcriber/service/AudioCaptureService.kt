@@ -140,13 +140,19 @@ class AudioCaptureService : Service() {
             chunkQueue.offer(POISON)
             recordThread?.join(3_000)
             recordThread = null
-            workerThread?.let { t ->
-                t.join(5_000)
-                if (t.isAlive) t.interrupt()
-            }
+            val worker = workerThread
+            worker?.join(5_000)
+            val workerStuck = worker?.isAlive == true
+            if (workerStuck) worker?.interrupt()
             workerThread = null
-            engine?.release()
-            engine = null
+            // 文字起こし(ネイティブ)実行中に release() すると @Synchronized のロック待ちで
+            // 永遠にブロックする。ワーカーが確実に終わっているときだけ解放する。
+            if (!workerStuck) {
+                engine?.release()
+                engine = null
+            } else {
+                Log.w(TAG, "transcription still running; skip release to avoid deadlock")
+            }
         }
         pushState { it.copy(active = false, paused = false, transcribing = false, recordingStartedElapsed = 0L) }
         // 録音・文字起こしは止めるが、未送信ファイルの送信が終わるまで常駐を維持する。
@@ -292,7 +298,8 @@ class AudioCaptureService : Service() {
         if (!chunkQueue.offer(chunk)) {
             chunkQueue.poll()
             chunkQueue.offer(chunk)
-            pushState { it.copy(dropped = it.dropped + 1) }
+            // 文字起こしが実時間に追いつかずキューが溢れている＝端末が過負荷。
+            pushState { it.copy(dropped = it.dropped + 1, overloaded = true) }
             Log.w(TAG, "queue full, dropped oldest chunk")
         } else {
             pushState { it.copy(queueSize = chunkQueue.size) }
@@ -328,7 +335,8 @@ class AudioCaptureService : Service() {
                 break
             }
             if (chunk === POISON) break
-            pushState { it.copy(queueSize = chunkQueue.size) }
+            // キューが空まで追いついたら過負荷フラグを解除。
+            pushState { it.copy(queueSize = chunkQueue.size, overloaded = if (chunkQueue.isEmpty()) false else it.overloaded) }
 
             // 簡易VAD: ほぼ無音のチャンクは文字起こししない
             if (AudioChunker.isSilent(chunk)) {
@@ -490,6 +498,7 @@ data class ServiceState(
     val currentFile: String? = null,
     val transcribing: Boolean = false,
     val draining: Boolean = false,
+    val overloaded: Boolean = false,
     val error: String? = null,
     /** 現在のマイク稼働区間の開始時刻(elapsedRealtime)。0 のとき計測停止中。 */
     val recordingStartedElapsed: Long = 0L,

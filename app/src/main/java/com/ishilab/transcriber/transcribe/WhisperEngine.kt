@@ -19,8 +19,9 @@ class WhisperEngine(
     override val isLoaded: Boolean
         get() = contextPtr != 0L
 
+    // 実時間に追いつけるよう、使えるコアを多めに使う（上限8）。
     private val numThreads: Int
-        get() = maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors()))
+        get() = maxOf(2, minOf(8, Runtime.getRuntime().availableProcessors()))
 
     override fun load() {
         if (isLoaded) return
