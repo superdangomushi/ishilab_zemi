@@ -215,6 +215,7 @@ async function addColumnIfMissing(table, column, definition) {
 // =====================================================================
 
 // テキストを保存（同じ email + filename は上書き）。再アップロード時は古い解析結果を消す。
+// 端末側（TranscriptStore）は毎時ファイルを累積した全文を毎回送ってくるので、上書きが正しい。
 // 保存した行の id を返す。
 async function saveTranscript(email, filename, content) {
   await pool.query(
@@ -222,6 +223,28 @@ async function saveTranscript(email, filename, content) {
      VALUES (?, ?, ?)
      ON DUPLICATE KEY UPDATE
        content = VALUES(content),
+       kadai_json = NULL, yotei_json = NULL, summary = NULL, analyzed_at = NULL,
+       updated_at = CURRENT_TIMESTAMP`,
+    [email, filename, content]
+  );
+  const [rows] = await pool.query(
+    `SELECT id FROM transcripts WHERE email = ? AND filename = ? LIMIT 1`,
+    [email, filename]
+  );
+  return rows[0] ? rows[0].id : null;
+}
+
+// テキストを保存（同じ email + filename は追記）。
+// サーバー側の音声文字起こし(audio.js)は録音1本ずつが独立した本文のため、
+// 同じ時間帯に複数回録音停止すると同じファイル名（yyyy-MM-dd_HH.txt）になり得る。
+// saveTranscript のように上書きすると先の録音分が消えてしまうため、こちらは追記する。
+// 保存した行の id を返す。
+async function appendTranscript(email, filename, content) {
+  await pool.query(
+    `INSERT INTO transcripts (email, filename, content)
+     VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       content = CONCAT(content, '\n\n', VALUES(content)),
        kadai_json = NULL, yotei_json = NULL, summary = NULL, analyzed_at = NULL,
        updated_at = CURRENT_TIMESTAMP`,
     [email, filename, content]
@@ -859,6 +882,7 @@ module.exports = {
   listDocuments,
   // transcripts
   saveTranscript,
+  appendTranscript,
   saveAnalysis,
   getAnalysis,
   getTodaysAnalysisByEmail,

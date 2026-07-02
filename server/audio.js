@@ -103,8 +103,10 @@ async function processJob(job) {
     }
 
     // テキストアップロードと同じファイル名規約（yyyy-MM-dd_HH.txt）に寄せる。
+    // 同じ時間帯に複数回録音停止すると同名ファイルになり得るため、
+    // saveTranscript（上書き）ではなく appendTranscript（追記）で既存分を残す。
     const txtName = job.filename.replace(/\.[^.]+$/, "") + ".txt";
-    const transcriptId = await db.saveTranscript(job.email, txtName, text);
+    const transcriptId = await db.appendTranscript(job.email, txtName, text);
 
     // 課題・予定・要約の抽出も同じパイプラインで実行（失敗しても文字起こし自体は成功扱い）。
     try {
