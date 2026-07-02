@@ -373,12 +373,28 @@ async function ask(question, ctx = {}) {
     .map((s) => `--- ${s.filename} ---\n${s.snippet}`)
     .join("\n\n")
     .slice(0, 8000);
+  // 質問文から日付が特定できた場合、その日の文字起こし全文（キーワード抜粋ではなく）を渡す。
+  const dayTranscriptsText = (ctx.dayTranscripts || [])
+    .map((t) => `--- ${t.filename} ---\n${t.content}`)
+    .join("\n\n")
+    .slice(0, 30000);
+  // 直近の会話履歴（同じチャット画面内で文脈が途切れないようにする）。
+  const historyText = (ctx.history || [])
+    .map((m) => `${m.role === "user" ? "利用者" : "あなた"}: ${m.content}`)
+    .join("\n")
+    .slice(-6000);
 
   const prompt = [
     "あなたは利用者（大学生）専属の有能な秘書です。利用者の課題・予定・授業の記録・資料を把握しており、",
     "話し言葉で親しみやすく、かつ的確に答えます。",
     `本日は ${today} です。相対的な日付表現はこの日付基準で YYYY-MM-DD(HH:MM) に変換して扱ってください。`,
     "",
+    ...(historyText ? [
+      "【ここまでの会話（新しい発話ほど下）】",
+      historyText,
+      "この続きとして、話の流れ・指示語（それ、さっきの、など）を踏まえて応答してください。",
+      "",
+    ] : []),
     "【あなたが把握しているデータ】",
     "■ 現在の課題・予定一覧:",
     tasksText || "（登録なし）",
@@ -398,6 +414,11 @@ async function ask(question, ctx = {}) {
     "■ 質問に関連する過去の授業・会話の文字起こし抜粋:",
     snippetsText || "（なし）",
     "",
+    ...(ctx.targetDay ? [
+      `■ ${ctx.targetDay} の授業記録（全文）:`,
+      dayTranscriptsText || "（この日の記録なし）",
+      "",
+    ] : []),
     "【利用者の発話】",
     question,
     "",
@@ -476,16 +497,23 @@ async function extractTaskRequests(question, today = localDate()) {
 // ユーティリティ
 // =====================================================================
 // "YYYY-MM-DD" / "YYYY-MM-DD HH:MM" → { at: "YYYY-MM-DD HH:MM:00" | null, dateOnly }
+// 月日が1桁（"2026-7-2"）や区切りが "/" のゆらぎも受け付ける
+// （LLM の出力ゆれで厳密な2桁ゼロ埋め形式にならず、deadline_at が黙って null になっていたのを修正）。
 function normalizeDeadline(s) {
   if (!s) return { at: null, dateOnly: false };
-  const dt = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})/);
+  const t = String(s).trim();
+  const dt = t.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})[ T](\d{1,2}):(\d{2})/);
   if (dt) {
+    const mm = dt[2].padStart(2, "0");
+    const dd = dt[3].padStart(2, "0");
     const hh = dt[4].padStart(2, "0");
-    return { at: `${dt[1]}-${dt[2]}-${dt[3]} ${hh}:${dt[5]}:00`, dateOnly: false };
+    return { at: `${dt[1]}-${mm}-${dd} ${hh}:${dt[5]}:00`, dateOnly: false };
   }
-  const d = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const d = t.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
   if (d) {
-    return { at: `${d[1]}-${d[2]}-${d[3]} ${DEFAULT_DEADLINE_TIME}:00`, dateOnly: true };
+    const mm = d[2].padStart(2, "0");
+    const dd = d[3].padStart(2, "0");
+    return { at: `${d[1]}-${mm}-${dd} ${DEFAULT_DEADLINE_TIME}:00`, dateOnly: true };
   }
   return { at: null, dateOnly: false };
 }

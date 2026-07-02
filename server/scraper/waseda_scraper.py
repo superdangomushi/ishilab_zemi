@@ -182,6 +182,21 @@ def _parse_period(text):
     return None, None
 
 
+def _direct_rows(table):
+    """table 自身が持つ <tr> だけを返す（セル内に入れ子テーブルがあってもその行は含めない）。
+
+    ページは <table> の中にレイアウト用の <table> が何重にも入れ子になっており、
+    単純に table.find_all("tr") すると入れ子テーブルの行まで全部拾ってしまう。
+    """
+    return [tr for tr in table.find_all("tr") if tr.find_parent("table") is table]
+
+
+def _direct_cells(row):
+    """row 自身が持つ <td>/<th> だけを返す（セル内の入れ子テーブルのセルは含めない）。"""
+    table = row.find_parent("table")
+    return [c for c in row.find_all(["th", "td"]) if c.find_parent("table") is table]
+
+
 def parse_timetable(html):
     """科目登録ページの「■登録科目一覧」テーブルをパースする。
 
@@ -194,28 +209,30 @@ def parse_timetable(html):
     courses = []
 
     # ■登録科目一覧 のヘッダ行（学期/曜日/時限/…）を含むテーブルを見つける。
+    # ページ全体がレイアウト用テーブルの入れ子なので、ヘッダらしき行は
+    # 各テーブル「自身」の1行目に限定し、セルのテキストが完全一致するかで判定する
+    # （部分一致だと外側のテーブルのセル内テキストに「学期」等が偶然含まれ誤検出する）。
     target_table = None
     for table in soup.find_all("table"):
-        first_row = table.find("tr")
-        if not first_row:
+        rows_in_table = _direct_rows(table)
+        if not rows_in_table:
             continue
-        cells = first_row.find_all(["th", "td"])
+        first_row = rows_in_table[0]
+        cells = _direct_cells(first_row)
         header = [c.get_text(strip=True) for c in cells]
-        # ヘッダに「学期」「曜日」「時限」「科目名」が含まれていれば対象テーブル
-        header_joined = "".join(header)
-        if "学期" in header_joined and "曜日" in header_joined and "科目名" in header_joined:
+        if "学期" in header and "曜日" in header and "科目名" in header:
             target_table = table
             break
 
     if not target_table:
         return courses
 
-    rows = target_table.find_all("tr")
+    rows = _direct_rows(target_table)
     if len(rows) < 2:
         return courses
 
     # ヘッダ行から列インデックスを特定（列順が変わっても対応）
-    header_cells = rows[0].find_all(["th", "td"])
+    header_cells = _direct_cells(rows[0])
     col_map = {}
     for i, cell in enumerate(header_cells):
         t = cell.get_text(strip=True)
@@ -248,7 +265,7 @@ def parse_timetable(html):
 
     # データ行を処理
     for row in rows[1:]:
-        cells = row.find_all(["th", "td"])
+        cells = _direct_cells(row)
         if len(cells) < 6:
             continue
         name = cell_text(cells, "name").strip()

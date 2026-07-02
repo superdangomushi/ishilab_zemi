@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
   UNIQUE KEY uq_email_day (email, day)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- チャット（秘書）の会話履歴。同じアカウントでの継続的な文脈維持に使う。
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  email      VARCHAR(255) NOT NULL,
+  -- 'user' | 'assistant'
+  role       VARCHAR(16)  NOT NULL,
+  content    TEXT         NOT NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_email_created (email, created_at)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
 -- Web から自己登録したユーザー。パスワードは sha256(salt + password) で保存（平文は持たない）。
 CREATE TABLE IF NOT EXISTS users (
   id            INT AUTO_INCREMENT PRIMARY KEY,

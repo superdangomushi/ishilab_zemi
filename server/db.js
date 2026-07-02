@@ -67,6 +67,18 @@ async function ensureSchema() {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
 
+  // チャット（秘書）の会話履歴。同じアカウントでの継続的な文脈維持に使う。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      email      VARCHAR(255) NOT NULL,
+      role       VARCHAR(16)  NOT NULL,
+      content    TEXT         NOT NULL,
+      created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_email_created (email, created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id         INT AUTO_INCREMENT PRIMARY KEY,
@@ -291,11 +303,36 @@ async function listTranscripts() {
   return rows;
 }
 
+// アカウント本人の一覧（Android アプリなど、認証付き API 用）。
+async function listTranscriptsByEmail(email, limit = 100) {
+  const [rows] = await pool.query(
+    `SELECT id, filename, CHAR_LENGTH(content) AS chars, updated_at, analyzed_at
+     FROM transcripts
+     WHERE email = ?
+     ORDER BY updated_at DESC, id DESC
+     LIMIT ?`,
+    [email, Number(limit) || 100]
+  );
+  return rows;
+}
+
 // 1 件を中身ごと取得。
 async function getTranscript(id) {
   const [rows] = await pool.query(
     `SELECT id, email, filename, content FROM transcripts WHERE id = ? LIMIT 1`,
     [id]
+  );
+  return rows[0] || null;
+}
+
+// アカウント本人の 1 件を中身ごと取得（Android アプリなど、認証付き API 用）。
+async function getTranscriptForEmail(email, id) {
+  const [rows] = await pool.query(
+    `SELECT id, filename, content, summary, updated_at, analyzed_at
+     FROM transcripts
+     WHERE email = ? AND id = ?
+     LIMIT 1`,
+    [email, id]
   );
   return rows[0] || null;
 }
@@ -656,12 +693,33 @@ async function replaceCourses(email, courses) {
 
 async function listCourses(email) {
   const [rows] = await pool.query(
-    `SELECT term, day, period, name, room, start_time, end_time
+    `SELECT id, term, day, period, name, room, start_time, end_time
      FROM courses WHERE email = ?
      ORDER BY FIELD(day,'月','火','水','木','金','土','日'), period`,
     [email]
   );
   return rows;
+}
+
+// Moodle/Waseda の自動取り込みが稀に誤っていることがあるための手動修正。
+// email を条件に含めて他アカウントの科目を操作できないようにする。
+async function updateCourse(email, id, { term, day, period, name, room, start_time, end_time }) {
+  const [result] = await pool.query(
+    `UPDATE courses SET
+       term = ?, day = ?, period = ?, name = ?, room = ?, start_time = ?, end_time = ?
+     WHERE id = ? AND email = ?`,
+    [
+      term || null, day || null, period != null && period !== "" ? Number(period) : null,
+      String(name || "").trim().slice(0, 255), room || null, start_time || null, end_time || null,
+      id, email,
+    ]
+  );
+  return result.affectedRows > 0;
+}
+
+async function deleteCourse(email, id) {
+  const [result] = await pool.query(`DELETE FROM courses WHERE id = ? AND email = ?`, [id, email]);
+  return result.affectedRows > 0;
 }
 
 // Waseda アカウント情報の保存・取得。password は暗号化済み文字列を渡す（暗号化は呼び出し側）。
@@ -744,6 +802,27 @@ async function listCalendarEvents(email) {
   return rows;
 }
 
+// =====================================================================
+// チャット履歴（秘書との会話。ChatGPT のような継続した文脈維持に使う）
+// =====================================================================
+
+async function addChatMessage(email, role, content) {
+  await pool.query(
+    `INSERT INTO chat_messages (email, role, content) VALUES (?, ?, ?)`,
+    [email, role, String(content || "").slice(0, 8000)]
+  );
+}
+
+// 直近 limit 件を古い順で返す（プロンプトへの注入・画面表示の両方に使う）。
+async function listRecentChatMessages(email, limit = 30) {
+  const [rows] = await pool.query(
+    `SELECT role, content, created_at FROM chat_messages
+     WHERE email = ? ORDER BY id DESC LIMIT ?`,
+    [email, limit]
+  );
+  return rows.reverse();
+}
+
 // Moodle URL を登録済みのユーザー一覧（定期同期用）。
 async function listUsersWithMoodle() {
   const [rows] = await pool.query(
@@ -774,6 +853,8 @@ module.exports = {
   removeGoogleAccount,
   replaceCourses,
   listCourses,
+  updateCourse,
+  deleteCourse,
   saveDocument,
   listDocuments,
   // transcripts
@@ -782,9 +863,14 @@ module.exports = {
   getAnalysis,
   getTodaysAnalysisByEmail,
   listTranscripts,
+  listTranscriptsByEmail,
   getTranscript,
+  getTranscriptForEmail,
   getTranscriptsForDay,
   searchTranscriptSnippets,
+  // chat
+  addChatMessage,
+  listRecentChatMessages,
   // tasks
   upsertTasks,
   addTask,

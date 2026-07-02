@@ -253,6 +253,34 @@ app.post("/api/courses", async (req, res) => {
   }
 });
 
+// Moodle/Waseda の自動取り込みが稀に誤っていることがあるための手動修正（曜日変更・編集・削除）。
+// 注意: 時間割の再取り込み（/api/courses の全置き換え）を行うと、この手動修正は失われる。
+app.patch("/api/courses/:id", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const { term, day, period, name, room, start_time, end_time } = req.body || {};
+  if (!String(name || "").trim()) return res.status(400).json({ ok: false, error: "科目名が必要です" });
+  try {
+    const ok = await db.updateCourse(account.email, req.params.id, { term, day, period, name, room, start_time, end_time });
+    if (!ok) return res.status(404).json({ ok: false, error: "科目が見つかりません" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.delete("/api/courses/:id", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const ok = await db.deleteCourse(account.email, req.params.id);
+    if (!ok) return res.status(404).json({ ok: false, error: "科目が見つかりません" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // 資料ファイル（PDF/TXT）を受け取り、その場で Gemini 要約して DB に保存する。
 // Content-Type が text/plain ならテキスト、application/pdf 等ならバイナリで受ける。
 app.post("/api/files", async (req, res) => {
@@ -826,6 +854,33 @@ app.post("/api/upload", async (req, res) => {
   });
 });
 
+// ログイン中アカウント本人の文字起こし一覧を返す。
+// サーバー文字起こしモードでは本文が端末に残らないため、Android アプリからも最新記録を読めるようにする。
+app.get("/api/transcripts", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+  try {
+    const transcripts = await db.listTranscriptsByEmail(account.email, limit);
+    res.json({ ok: true, transcripts });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ログイン中アカウント本人の文字起こし本文を返す。
+app.get("/api/transcripts/:id", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const row = await db.getTranscriptForEmail(account.email, req.params.id);
+    if (!row) return res.status(404).json({ ok: false, error: "見つかりません" });
+    res.json({ ok: true, transcript: row });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // =====================================================================
 // 秘書チャット
 // =====================================================================
@@ -896,7 +951,15 @@ app.post("/api/ask", async (req, res) => {
     const snippets = await db.searchTranscriptSnippets(
       account.email, extractKeywords(question, courses)
     );
-    const result = await gemini.ask(question, { tasks, summaries, calendar, courses, documents, snippets });
+    // 「今日の授業」「7/1の講義」のように日付が特定できる質問には、
+    // キーワード抜粋ではなくその日の文字起こし全文を渡す。
+    const targetDay = extractDateFromQuestion(question, gemini.localDate());
+    const dayTranscripts = targetDay ? await db.getTranscriptsForDay(account.email, targetDay) : [];
+    // 会話が1問1答で毎回途切れないよう、直近の会話履歴も文脈として渡す。
+    const history = await db.listRecentChatMessages(account.email, 20);
+    const result = await gemini.ask(question, {
+      tasks, summaries, calendar, courses, documents, snippets, targetDay, dayTranscripts, history,
+    });
 
     // Gemini が返した操作を実行する。
     const applied = [];
@@ -938,9 +1001,29 @@ app.post("/api/ask", async (req, res) => {
       }
     }
 
+    // 次回以降の会話でも文脈を維持できるよう、発話と返答を履歴として保存する。
+    try {
+      await db.addChatMessage(account.email, "user", question);
+      await db.addChatMessage(account.email, "assistant", reply);
+    } catch (e) {
+      console.error("チャット履歴の保存に失敗:", e.message);
+    }
+
     res.json({ ok: true, reply, applied });
   } catch (e) {
     console.error("ask に失敗:", e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// チャットの過去の会話履歴を返す（画面再読み込み後も続きから表示するため）。
+app.get("/api/chat/history", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const messages = await db.listRecentChatMessages(account.email, 50);
+    res.json({ ok: true, messages });
+  } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -962,6 +1045,30 @@ function extractKeywords(question, courses) {
     if (!keywords.includes(w)) keywords.push(w);
   }
   return keywords.slice(0, 8);
+}
+
+// 質問文から対象の日付("YYYY-MM-DD")を抽出する。見つからなければ null。
+// 「今日の授業」「7/1の講義で〜」のように日付が特定できる質問には、
+// キーワード抜粋ではなくその日の文字起こし全文を渡すために使う。
+function extractDateFromQuestion(question, today) {
+  const base = new Date(`${today}T00:00:00`);
+  const shift = (days) => {
+    const d = new Date(base);
+    d.setDate(d.getDate() + days);
+    return gemini.localDate(d);
+  };
+  if (/一昨日/.test(question)) return shift(-2);
+  if (/昨日/.test(question)) return shift(-1);
+  if (/今日|本日/.test(question)) return shift(0);
+  if (/明日/.test(question)) return shift(1);
+
+  let m = question.match(/(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})日?/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, "0")}-${String(m[3]).padStart(2, "0")}`;
+
+  m = question.match(/(\d{1,2})月(\d{1,2})日/);
+  if (m) return `${base.getFullYear()}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
+
+  return null;
 }
 
 // "#3" やタスク内容の一部からタスクを特定する。
@@ -1486,6 +1593,10 @@ function renderDashboard(tableRows) {
           <h4 style="font-size:.85rem; margin:0 0 .4rem; font-weight:700">この日の要約</h4>
           <div id="calSelectedSummary" style="font-size:.85rem; line-height:1.5; white-space:pre-wrap"></div>
         </div>
+        <hr>
+        <h3 style="font-size:.95rem; margin:.4rem 0 .6rem">時間割の編集</h3>
+        <p class="muted" style="font-size:.8rem; margin:0 0 .5rem">Moodle/Waseda の自動取り込みが誤っている場合はここで修正できます（曜日・時限・科目名など）。取り込み直しをすると修正内容は失われます。</p>
+        <div id="calCoursesEdit"><p class="muted">時間割が未登録です。</p></div>
       </section>
 
       <section class="card panel" data-panel="summary">
@@ -1612,6 +1723,7 @@ function renderDashboard(tableRows) {
       'X-Account-Email': auth.email||'', 'Authorization':'Bearer '+(auth.token||'') }; }
 
     let allGoogleEvents = [];
+    let allCourses = [];
     let calYear = new Date().getFullYear();
     let calMonth = new Date().getMonth() + 1;
     // sv-SE gives yyyy-mm-dd format natively
@@ -1619,7 +1731,37 @@ function renderDashboard(tableRows) {
     
     function prevMonth(){ calMonth--; if(calMonth<1){ calMonth=12; calYear--; } renderCalendar(); }
     function nextMonth(){ calMonth++; if(calMonth>12){ calMonth=1; calYear++; } renderCalendar(); }
-    
+
+    const DOW_JA = ['日','月','火','水','木','金','土'];
+    // 学期の大まかな開始日・終了日（早稲田の一般的な目安。公式の学事暦とはズレる場合あり）。
+    // /api/google/sync-courses の「春学期は〜7/31, それ以外は翌1/31まで」という既存の目安に合わせた。
+    function courseTermRange(term, refDate){
+      const m = refDate.getMonth() + 1;
+      const ay = m >= 4 ? refDate.getFullYear() : refDate.getFullYear() - 1; // 学年度の開始年（4月始まり）
+      const d = (y,mo,day) => y + '-' + String(mo).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      switch(term){
+        case '通年': return { start: d(ay,4,1), end: d(ay+1,1,31) };
+        case '春': return { start: d(ay,4,1), end: d(ay,7,31) };
+        case '春Q': return { start: d(ay,4,1), end: d(ay,6,15) };
+        case '夏Q': return { start: d(ay,6,16), end: d(ay,7,31) };
+        case '夏季集中': return { start: d(ay,8,1), end: d(ay,9,15) };
+        case '秋': return { start: d(ay,9,1), end: d(ay+1,1,31) };
+        case '秋Q': return { start: d(ay,9,1), end: d(ay,11,15) };
+        case '冬Q': return { start: d(ay,11,16), end: d(ay+1,1,31) };
+        case '冬季集中': return { start: d(ay+1,1,1), end: d(ay+1,1,31) };
+        default: return { start: d(ay,4,1), end: d(ay+1,1,31) }; // 不明な学期は通年扱いで広めに表示
+      }
+    }
+    // この科目が指定日(YYYY-MM-DD)に該当するか。
+    // 曜日・時限が判明していれば毎週その曜日、不明（オンデマンド等）なら学期中の全日に配置する。
+    function courseOccursOn(course, dateStr){
+      const dateObj = new Date(dateStr + 'T00:00:00');
+      const range = courseTermRange(course.term || '', dateObj);
+      if(dateStr < range.start || dateStr > range.end) return false;
+      if(!course.day) return true; // オンデマンド等: 学期中は毎日
+      return DOW_JA[dateObj.getDay()] === course.day;
+    }
+
     function renderCalendar(){
       if(!$('calMonthTitle')) return;
       $('calMonthTitle').textContent = calYear + '年' + calMonth + '月';
@@ -1640,7 +1782,7 @@ function renderDashboard(tableRows) {
       for(let d=1; d<=lastDate; d++){
         const dateStr = calYear + '-' + pad(calMonth) + '-' + pad(d);
         const isActive = dateStr === calSelectedDate;
-        const hasEvents = dateMap[dateStr];
+        const hasEvents = dateMap[dateStr] || allCourses.some(c => courseOccursOn(c, dateStr));
         html += '<div class="calendar-cell ' + (isActive ? 'active' : '') + '" onclick="selectCalDate(\\'' + dateStr + '\\')">' + d + (hasEvents ? '<span class="dot"></span>' : '') + '</div>';
       }
       $('calendarCells').innerHTML = html;
@@ -1666,6 +1808,15 @@ function renderDashboard(tableRows) {
             const time = norm.length >= 16 ? norm.substring(11,16) : '終日';
             dayItems.push({ time, title: '[カレンダー] ' + ev.title });
           }
+        }
+      });
+      // 早稲田100分授業の時限開始時刻（/api/google/sync-courses と同じ定義）。表示のソート・ラベル用。
+      const PERIOD_TIMES = {1:'09:00',2:'10:55',3:'13:15',4:'15:10',5:'17:05',6:'18:55',7:'20:45'};
+      allCourses.forEach(c => {
+        if(courseOccursOn(c, calSelectedDate)){
+          const time = (c.period && PERIOD_TIMES[c.period]) ? PERIOD_TIMES[c.period] : '終日';
+          const room = c.room ? (' @' + c.room) : '';
+          dayItems.push({ time, title: '[授業] ' + c.name + room });
         }
       });
       dayItems.sort((a,b) => (a.time === '終日' ? '00:00' : a.time).localeCompare(b.time === '終日' ? '00:00' : b.time));
@@ -1746,7 +1897,7 @@ function renderDashboard(tableRows) {
       if(j.ok){ $('pwState').textContent='✓ 変更しました'; $('curpw').value=$('newpw').value=''; }
       else $('pwState').textContent = '✗ ' + (j.error||'変更失敗');
     }
-    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioJobs(); loadGoogle(); }
+    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioJobs(); loadGoogle(); loadChatHistory(); }
 
     // ---- Google カレンダー連携（Web OAuth） ----
     let googleAccounts = [];
@@ -1875,19 +2026,74 @@ function renderDashboard(tableRows) {
       try {
         const r = await fetch('/api/courses',{headers:headers()});
         const j = await r.json();
-        if(j.ok && j.courses && j.courses.length){
-          $('wasedaCoursesBox').style.display = '';
-          const rows = j.courses.map(c => {
-            const dayPeriod = c.day ? (c.day + '曜' + (c.period || '') + '限') : 'オンデマンド等';
-            const room = c.room ? (' (' + c.room + ')') : '';
-            const term = c.term ? ('[' + c.term + '] ') : '';
-            return '<div style="padding:.2rem 0; border-bottom:1px dashed #f3f4f6">・' + term + '<strong>' + dayPeriod + '</strong> ' + escapeHtml(c.name) + escapeHtml(room) + '</div>';
-          }).join('');
-          $('wasedaCourses').innerHTML = rows;
-        } else {
-          $('wasedaCoursesBox').style.display = 'none';
-        }
+        allCourses = (j.ok && Array.isArray(j.courses)) ? j.courses : [];
+        if($('wasedaCoursesBox')) $('wasedaCoursesBox').style.display = allCourses.length ? '' : 'none';
+        renderCourseLists();
+        renderCalendar();
       } catch(e){}
+    }
+    // ---- 時間割の編集（カレンダー画面下・アカウント画面の両方から使う）----
+    let courseEditingId = null;
+    function courseRowHtml(c){
+      const dayPeriod = c.day ? (c.day + '曜' + (c.period || '') + '限') : 'オンデマンド等';
+      const room = c.room ? (' (' + c.room + ')') : '';
+      const term = c.term ? ('[' + c.term + '] ') : '';
+      if(courseEditingId === c.id){
+        const dayOptions = ['', '月','火','水','木','金','土','日'].map(d =>
+          '<option value="' + d + '"' + (d === (c.day || '') ? ' selected' : '') + '>' + (d || '(なし/オンデマンド)') + '</option>'
+        ).join('');
+        return '<div class="card" style="margin:.3rem 0; padding:.5rem .7rem; background:#fff; border:1px solid var(--line); border-radius:10px">' +
+          '<div class="row" style="gap:.4rem; flex-wrap:wrap">' +
+          '<input id="ce_name_' + c.id + '" value="' + escapeHtml(c.name) + '" placeholder="科目名" style="flex:1; min-width:140px">' +
+          '<input id="ce_term_' + c.id + '" value="' + escapeHtml(c.term || '') + '" placeholder="学期(例: 春)" style="width:90px">' +
+          '<select id="ce_day_' + c.id + '" style="width:130px">' + dayOptions + '</select>' +
+          '<input id="ce_period_' + c.id + '" type="number" min="1" max="7" value="' + (c.period || '') + '" placeholder="時限" style="width:70px">' +
+          '<input id="ce_room_' + c.id + '" value="' + escapeHtml(c.room || '') + '" placeholder="教室" style="width:120px">' +
+          '</div>' +
+          '<div class="row" style="margin-top:.4rem; gap:.4rem">' +
+          '<button class="small" onclick="saveCourseEdit(' + c.id + ')">保存</button>' +
+          '<button class="ghost small" onclick="cancelCourseEdit()">キャンセル</button>' +
+          '</div></div>';
+      }
+      return '<div style="padding:.3rem 0; border-bottom:1px dashed #f3f4f6; display:flex; justify-content:space-between; align-items:center; gap:.5rem">' +
+        '<span>・' + term + '<strong>' + dayPeriod + '</strong> ' + escapeHtml(c.name) + escapeHtml(room) + '</span>' +
+        '<span class="row" style="gap:.3rem; flex-shrink:0">' +
+        '<button class="ghost small" onclick="startCourseEdit(' + c.id + ')">編集</button>' +
+        '<button class="ghost small" onclick="deleteCourseRow(' + c.id + ')">削除</button>' +
+        '</span></div>';
+    }
+    function renderCourseLists(){
+      const html = allCourses.length ? allCourses.map(courseRowHtml).join('') : '<p class="muted">時間割が未登録です。</p>';
+      if($('wasedaCourses')) $('wasedaCourses').innerHTML = html;
+      if($('calCoursesEdit')) $('calCoursesEdit').innerHTML = html;
+    }
+    function startCourseEdit(id){ courseEditingId = id; renderCourseLists(); }
+    function cancelCourseEdit(){ courseEditingId = null; renderCourseLists(); }
+    async function saveCourseEdit(id){
+      const name = $('ce_name_' + id).value.trim();
+      if(!name){ alert('科目名を入力してください'); return; }
+      const body = {
+        name,
+        term: $('ce_term_' + id).value.trim(),
+        day: $('ce_day_' + id).value,
+        period: $('ce_period_' + id).value ? Number($('ce_period_' + id).value) : null,
+        room: $('ce_room_' + id).value.trim(),
+      };
+      try {
+        const r = await fetch('/api/courses/' + id, {method:'PATCH', headers:headers(), body:JSON.stringify(body)});
+        const j = await r.json();
+        if(j.ok){ courseEditingId = null; await loadWasedaCourses(); }
+        else alert('保存に失敗しました: ' + (j.error || ''));
+      } catch(e){ alert('通信エラー'); }
+    }
+    async function deleteCourseRow(id){
+      if(!confirm('この科目を削除しますか？')) return;
+      try {
+        const r = await fetch('/api/courses/' + id, {method:'DELETE', headers:headers()});
+        const j = await r.json();
+        if(j.ok){ await loadWasedaCourses(); }
+        else alert('削除に失敗しました: ' + (j.error || ''));
+      } catch(e){ alert('通信エラー'); }
     }
     async function syncWasedaCoursesToGoogle(){
       $('wasedaSyncGoogleState').textContent = '同期中…';
@@ -2041,6 +2247,18 @@ function renderDashboard(tableRows) {
       d.className = 'bubble '+who; d.textContent = text;
       $('chatlog').appendChild(d); $('chatlog').scrollTop = $('chatlog').scrollHeight;
     }
+    // 画面を開き直しても会話が途切れないよう、保存済みの履歴を読み込んで表示する。
+    async function loadChatHistory(){
+      if(!auth.email) return;
+      try {
+        const r = await fetch('/api/chat/history',{headers:headers()});
+        const j = await r.json();
+        if(j.ok && Array.isArray(j.messages) && j.messages.length){
+          $('chatlog').innerHTML = '';
+          j.messages.forEach(m => bubble(m.content, m.role === 'user' ? 'me' : 'bot'));
+        }
+      } catch(e){}
+    }
     async function ask(){
       const q = $('q').value.trim(); if(!q) return;
       $('q').value=''; bubble(q,'me');
@@ -2053,7 +2271,7 @@ function renderDashboard(tableRows) {
           if(Array.isArray(j.applied) && j.applied.length){
             bubble(j.applied.map(a => a.op==='add_task'
               ? '✓ 登録: '+(a.type==='yotei'?'予定':'課題')+'「'+a.content+'」'+(a.deadline_at?'（期限 '+String(a.deadline_at).slice(0,16).replace('T',' ')+'）':'（期限未設定）')
-              : '✓ 完了: 「'+(a.content||'')+'」').join('\n'), 'bot');
+              : '✓ 完了: 「'+(a.content||'')+'」').join('\\n'), 'bot');
           }
           loadTasks();
         }
