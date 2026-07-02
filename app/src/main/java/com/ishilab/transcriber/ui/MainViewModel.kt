@@ -580,9 +580,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (all.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
                     AIHelper.syncCalendar(
-                        prefs.getString("base_url", "") ?: "",
-                        prefs.getString("email", "") ?: "",
-                        prefs.getString("token", "") ?: "",
+                        accountStore.baseUrl,
+                        accountStore.email,
+                        accountStore.token,
                         all
                     )
                 }
