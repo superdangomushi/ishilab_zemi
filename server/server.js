@@ -39,6 +39,7 @@ const gemini = require("./gemini");
 const line = require("./line");
 const summary = require("./summary");
 const reminders = require("./reminders");
+const moodle = require("./moodle");
 
 const PORT = process.env.PORT || 3000;
 const ACCOUNTS_FILE = path.join(__dirname, "accounts.json");
@@ -186,6 +187,47 @@ app.post("/api/change-password", async (req, res) => {
   } catch (e) {
     console.error("パスワード変更に失敗:", e.message);
     res.status(500).json({ ok: false, error: "保存に失敗しました" });
+  }
+});
+
+// Moodle 連携: iCal 書き出し URL の取得・保存・即時同期（自己登録ユーザーのみ）。
+app.get("/api/moodle", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const url = await db.getMoodleUrl(account.email);
+    res.json({ ok: true, url: url || "" });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post("/api/moodle", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const url = String(req.body?.url || "").trim();
+  if (url && !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ ok: false, error: "http(s) の URL を入力してください" });
+  }
+  try {
+    await db.setMoodleUrl(account.email, url);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.post("/api/moodle/sync", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const url = await db.getMoodleUrl(account.email);
+    if (!url) return res.status(400).json({ ok: false, error: "Moodle の URL が未設定です" });
+    const imported = await moodle.syncUser(account.email, url);
+    res.json({ ok: true, imported });
+  } catch (e) {
+    console.error(`Moodle 同期に失敗 (${account.email}):`, e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
@@ -776,6 +818,18 @@ function renderDashboard(tableRows) {
           <span id="pwState" class="muted"></span>
         </div>
         <hr>
+        <h3 style="font-size:.95rem; margin:.2rem 0 .6rem">Moodle 連携（提出物・予定の取り込み）</h3>
+        <p class="muted" style="margin:.2rem 0 .5rem">
+          Moodle のカレンダー › 書き出し › 「カレンダーの URL を取得」で得た iCal URL を貼り付けてください。
+          取り込んだ提出物・予定は課題一覧・リマインドに反映されます。
+        </p>
+        <input id="moodleUrl" placeholder="https://…/calendar/export_execute.php?...">
+        <div class="row" style="margin-top:.6rem">
+          <button onclick="saveMoodle()">保存</button>
+          <button class="ghost" onclick="syncMoodle()">今すぐ同期</button>
+          <span id="moodleState" class="muted"></span>
+        </div>
+        <hr>
         <button class="ghost" onclick="logout()">ログアウト</button>
       </section>
     </div><!-- /#app -->
@@ -843,7 +897,30 @@ function renderDashboard(tableRows) {
       if(j.ok){ $('pwState').textContent='✓ 変更しました'; $('curpw').value=$('newpw').value=''; }
       else $('pwState').textContent = '✗ ' + (j.error||'変更失敗');
     }
-    function loadAll(){ loadTasks(); loadSummary(); }
+    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); }
+
+    // ---- Moodle 連携 ----
+    async function loadMoodle(){
+      if(!auth.email) return;
+      try {
+        const r = await fetch('/api/moodle',{headers:headers()});
+        const j = await r.json();
+        if(j.ok) $('moodleUrl').value = j.url || '';
+      } catch(e){}
+    }
+    async function saveMoodle(){
+      const url = $('moodleUrl').value.trim();
+      const r = await fetch('/api/moodle',{method:'POST',headers:headers(),body:JSON.stringify({url})});
+      const j = await r.json();
+      $('moodleState').textContent = j.ok ? '✓ 保存しました' : ('✗ '+(j.error||'保存失敗'));
+    }
+    async function syncMoodle(){
+      $('moodleState').textContent = '同期中…';
+      const r = await fetch('/api/moodle/sync',{method:'POST',headers:headers()});
+      const j = await r.json();
+      if(j.ok){ $('moodleState').textContent = '✓ '+j.imported+' 件取り込みました'; loadTasks(); }
+      else $('moodleState').textContent = '✗ '+(j.error||'同期失敗');
+    }
 
     // ---- 本文表示（モーダル） ----
     async function viewText(id){
@@ -989,6 +1066,8 @@ async function main() {
   }
   // リマインド監視・日次要約ジョブを開始。
   reminders.start(resolveLineTarget);
+  // Moodle の定期同期を開始。
+  moodle.start();
 
   app.listen(PORT, () => {
     console.log(`AIHelper listening on http://localhost:${PORT}`);

@@ -100,6 +100,8 @@ async function ensureSchema() {
   await addColumnIfMissing("transcripts", "yotei_json", "LONGTEXT NULL");
   await addColumnIfMissing("transcripts", "summary", "TEXT NULL");
   await addColumnIfMissing("transcripts", "analyzed_at", "DATETIME NULL");
+  // Moodle カレンダーの iCal 書き出し URL（ユーザーごと）。
+  await addColumnIfMissing("users", "moodle_ical_url", "VARCHAR(1024) NULL");
 }
 
 async function addColumnIfMissing(table, column, definition) {
@@ -427,6 +429,25 @@ async function userExists(email) {
   return rows.length > 0;
 }
 
+async function setMoodleUrl(email, url) {
+  await pool.query(`UPDATE users SET moodle_ical_url = ? WHERE email = ?`, [url || null, email]);
+}
+
+async function getMoodleUrl(email) {
+  const [rows] = await pool.query(
+    `SELECT moodle_ical_url FROM users WHERE email = ? LIMIT 1`, [email]
+  );
+  return rows[0] ? rows[0].moodle_ical_url : null;
+}
+
+// Moodle URL を登録済みのユーザー一覧（定期同期用）。
+async function listUsersWithMoodle() {
+  const [rows] = await pool.query(
+    `SELECT email, moodle_ical_url FROM users WHERE moodle_ical_url IS NOT NULL AND moodle_ical_url <> ''`
+  );
+  return rows;
+}
+
 module.exports = {
   pool,
   ensureSchema,
@@ -436,6 +457,9 @@ module.exports = {
   getUserByToken,
   updateUserPassword,
   userExists,
+  setMoodleUrl,
+  getMoodleUrl,
+  listUsersWithMoodle,
   // transcripts
   saveTranscript,
   saveAnalysis,
