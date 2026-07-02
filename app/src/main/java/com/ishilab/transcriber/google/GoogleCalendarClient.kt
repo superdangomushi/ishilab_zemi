@@ -19,6 +19,8 @@ data class CalendarEvent(
     val whenText: String,
     val startMillis: Long,
     val accountEmail: String = "",
+    /** 終了日時 "yyyy-MM-dd HH:mm"。終日予定など終了時刻がないときは空。 */
+    val endText: String = "",
 )
 
 /**
@@ -68,7 +70,9 @@ object GoogleCalendarClient {
                 val d = start?.optString("date")?.ifBlank { null }
                 val whenText = dt?.replace('T', ' ')?.take(16) ?: (d ?: "")
                 val ms = parseMillis(dt ?: d)
-                CalendarEvent(o.optString("summary", "(無題)"), whenText, ms)
+                val endDt = o.optJSONObject("end")?.optString("dateTime")?.ifBlank { null }
+                val endText = endDt?.replace('T', ' ')?.take(16) ?: ""
+                CalendarEvent(o.optString("summary", "(無題)"), whenText, ms, endText = endText)
             }.sortedBy { it.startMillis }
         }
     }

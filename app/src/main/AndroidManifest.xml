@@ -16,6 +16,10 @@
     <!-- モデルの初回ダウンロード -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 1日のまとめ通知を指定時刻ちょうどに出す（Android 12+ はユーザー許可制） -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 再起動後もまとめ通知・リマインドのアラームを貼り直す -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-feature
         android:name="android.hardware.microphone"
@@ -64,6 +68,20 @@
         <receiver
             android:name=".net.ReminderAckReceiver"
             android:exported="false" />
+
+        <!-- 設定時刻に「1日のまとめ」を通知する -->
+        <receiver
+            android:name=".service.DailyDigestReceiver"
+            android:exported="false" />
+
+        <!-- 端末再起動後にアラームを貼り直す（BOOT_COMPLETED はシステムのみ送信可） -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

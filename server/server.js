@@ -508,13 +508,13 @@ app.post("/api/google/sync-courses", async (req, res) => {
 
     const token = await google.accessTokenOf(decryptCred(row.refresh_token));
 
-    // 早稲田100分授業の時限定義
+    // 早稲田大学の公式時間割（100分授業）。1限〜6限＋夜間の7限。
     const periods = {
-      1: { start: "09:00:00", end: "10:40:00" },
-      2: { start: "10:55:00", end: "12:35:00" },
-      3: { start: "13:15:00", end: "14:55:00" },
-      4: { start: "15:10:00", end: "16:50:00" },
-      5: { start: "17:05:00", end: "18:45:00" },
+      1: { start: "08:50:00", end: "10:30:00" },
+      2: { start: "10:40:00", end: "12:20:00" },
+      3: { start: "13:10:00", end: "14:50:00" },
+      4: { start: "15:05:00", end: "16:45:00" },
+      5: { start: "17:00:00", end: "18:40:00" },
       6: { start: "18:55:00", end: "20:35:00" },
       7: { start: "20:45:00", end: "22:25:00" },
     };
@@ -1937,16 +1937,25 @@ function renderDashboard() {
           const dStr = new Date(ev.startMillis).toLocaleDateString('sv-SE').slice(0,10);
           if(dStr === calSelectedDate){
             const norm = ev.whenText.replace('T',' ');
-            const time = norm.length >= 16 ? norm.substring(11,16) : '終日';
+            const start = norm.length >= 16 ? norm.substring(11,16) : '終日';
+            const endNorm = (ev.endText || '').replace('T',' ');
+            const end = endNorm.length >= 16 ? endNorm.substring(11,16) : '';
+            const time = (start !== '終日' && end) ? start + '〜' + end : start;
             dayItems.push({ time, kind: 'calendar', title: '[カレンダー] ' + ev.title });
           }
         }
       });
-      // 早稲田100分授業の時限開始時刻（/api/google/sync-courses と同じ定義）。表示のソート・ラベル用。
-      const PERIOD_TIMES = {1:'09:00',2:'10:55',3:'13:15',4:'15:10',5:'17:05',6:'18:55',7:'20:45'};
+      // 早稲田大学の公式時間割（100分授業。/api/google/sync-courses と同じ定義）。表示のソート・ラベル用。
+      const PERIOD_TIMES = {
+        1:{s:'08:50',e:'10:30'},2:{s:'10:40',e:'12:20'},3:{s:'13:10',e:'14:50'},
+        4:{s:'15:05',e:'16:45'},5:{s:'17:00',e:'18:40'},6:{s:'18:55',e:'20:35'},7:{s:'20:45',e:'22:25'}
+      };
       allCourses.forEach(c => {
         if(courseOccursOn(c, calSelectedDate)){
-          const time = (c.period && PERIOD_TIMES[c.period]) ? PERIOD_TIMES[c.period] : '終日';
+          // start_time/end_time は複数時限にまたがる授業の時限番号。単一時限は period。
+          const startP = PERIOD_TIMES[c.start_time || c.period];
+          const endP = PERIOD_TIMES[c.end_time || c.period];
+          const time = startP ? (endP ? startP.s + '〜' + endP.e : startP.s) : '終日';
           dayItems.push({ time, kind: 'course', course: c });
         }
       });

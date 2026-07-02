@@ -80,10 +80,13 @@ async function listUpcomingEvents(accessToken, max = 20) {
   return (j.items || []).map((o) => {
     const dt = o.start?.dateTime || "";
     const d = o.start?.date || "";
+    const endDt = o.end?.dateTime || "";
     return {
       title: o.summary || "(無題)",
       whenText: dt ? dt.replace("T", " ").slice(0, 16) : d,
       startMillis: parseMillis(dt || d),
+      // 終了日時 "yyyy-MM-dd HH:mm"。終日予定など終了時刻がないときは空。
+      endText: endDt ? endDt.replace("T", " ").slice(0, 16) : "",
     };
   }).sort((a, b) => a.startMillis - b.startMillis);
 }

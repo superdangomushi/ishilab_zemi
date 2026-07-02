@@ -83,6 +83,8 @@ import com.ishilab.transcriber.google.GoogleCalendarClient
 import com.ishilab.transcriber.model.WhisperModel
 import com.ishilab.transcriber.net.AiHelperClient
 import com.ishilab.transcriber.service.AudioCaptureService
+import com.ishilab.transcriber.service.DailyDigestScheduler
+import com.ishilab.transcriber.service.DigestTimeStore
 import com.ishilab.transcriber.service.ServiceState
 import com.ishilab.transcriber.ui.ChatMessage
 import com.ishilab.transcriber.ui.MainViewModel
@@ -115,6 +117,8 @@ class MainActivity : ComponentActivity() {
         requestNeededPermissions()
         // 録音していないときでも「締切が近い予定・課題」を定期通知する。
         com.ishilab.transcriber.service.ReminderReceiver.schedule(this)
+        // 設定済みの「1日のまとめ通知」アラームを貼り直す。
+        com.ishilab.transcriber.service.DailyDigestScheduler.scheduleAll(this)
         setContent {
             MaterialTheme(colorScheme = AppColorScheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -680,39 +684,8 @@ private data class CalItem(
     val task: AiHelperClient.Task? = null,
 )
 
-private val DowJa = listOf("月", "火", "水", "木", "金", "土", "日")
-private val PeriodStartTimes = mapOf(
-    1 to "09:00", 2 to "10:55", 3 to "13:15", 4 to "15:10",
-    5 to "17:05", 6 to "18:55", 7 to "20:45"
-)
-
-private fun courseTermRange(term: String, ref: LocalDate): Pair<LocalDate, LocalDate> {
-    val ay = if (ref.monthValue >= 4) ref.year else ref.year - 1
-    fun d(year: Int, month: Int, day: Int) = LocalDate.of(year, month, day)
-    return when {
-        term.contains("通年") -> d(ay, 4, 1) to d(ay + 1, 1, 31)
-        term.contains("春") && (term.contains("Q") || term.contains("クォーター")) ->
-            d(ay, 4, 1) to d(ay, 6, 15)
-        term.contains("夏") -> d(ay, 8, 1) to d(ay, 9, 15)
-        term.contains("秋") && (term.contains("Q") || term.contains("クォーター")) ->
-            d(ay, 9, 1) to d(ay, 11, 15)
-        term.contains("冬") -> d(ay, 11, 16) to d(ay + 1, 1, 31)
-        term.contains("春") -> d(ay, 4, 1) to d(ay, 7, 31)
-        term.contains("秋") -> d(ay, 9, 1) to d(ay + 1, 1, 31)
-        else -> d(ay, 4, 1) to d(ay + 1, 1, 31)
-    }
-}
-
-private fun courseOccursOn(course: AiHelperClient.Course, date: LocalDate): Boolean {
-    if (course.day.isBlank()) return false
-    val (start, end) = courseTermRange(course.term, date)
-    return !date.isBefore(start) && !date.isAfter(end) && DowJa[date.dayOfWeek.value - 1] == course.day
-}
-
-private fun courseTime(course: AiHelperClient.Course): String =
-    course.startTime.takeIf { it.length >= 5 }?.take(5)
-        ?: course.period?.let { PeriodStartTimes[it] }
-        ?: ""
+// DowJa / PeriodTimes / courseTermRange / courseOccursOn / courseTime は
+// まとめ通知と共用のため CourseSchedule.kt に移動した。
 
 /** 月カレンダー。日付をタップするとその日の予定・時間・（あれば）要約を表示。 */
 @Composable
@@ -764,7 +737,10 @@ private fun CalendarTab(
             if (ev.startMillis > 0) {
                 val d = Instant.ofEpochMilli(ev.startMillis).atZone(ZoneId.systemDefault()).toLocalDate()
                 val norm = ev.whenText.replace('T', ' ')
-                val time = if (norm.length >= 16) norm.substring(11, 16) else ""
+                val start = if (norm.length >= 16) norm.substring(11, 16) else ""
+                val endNorm = ev.endText.replace('T', ' ')
+                val end = if (endNorm.length >= 16) endNorm.substring(11, 16) else ""
+                val time = if (start.isNotBlank() && end.isNotBlank()) "$start〜$end" else start
                 list.add(CalItem(d, time, "[カレンダー] ${ev.title}"))
             }
         }
@@ -958,6 +934,9 @@ private fun SecretaryTab(
         item { MoodleCard(ui, onLoadMoodle, onSaveMoodleUrl, onSyncMoodle) }
         item { WasedaCard(ui, onLoadWaseda, onSaveWaseda, onSyncWaseda) }
 
+        // ---- 1日のまとめ通知 ----
+        item { DigestCard() }
+
         // ---- 今日の要約 ----
         item { SummaryCard(ui, onLoadSummary, onGenerateSummary) }
 
@@ -1007,6 +986,70 @@ private fun SecretaryTab(
 
         // ---- 秘書チャット ----
         item { SecretaryCard(ui, onAsk) }
+    }
+}
+
+/**
+ * 「1日のまとめ通知」の時刻設定カード。
+ * 設定した時刻（複数可）に今日の授業・予定・課題期限をまとめた通知を出す。
+ */
+@Composable
+private fun DigestCard() {
+    val context = LocalContext.current
+    var times by remember { mutableStateOf(DigestTimeStore(context).times) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("1日のまとめ通知", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "設定した時刻に、今日の授業・予定・課題の期限をまとめて通知します（複数設定可）。",
+                style = MaterialTheme.typography.bodySmall
+            )
+            if (times.isEmpty()) {
+                Text("通知時刻は未設定です。", style = MaterialTheme.typography.bodySmall)
+            }
+            times.forEach { t ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(t, style = MaterialTheme.typography.bodyLarge)
+                    TextButton(onClick = {
+                        val store = DigestTimeStore(context)
+                        store.remove(t)
+                        times = store.times
+                        DailyDigestScheduler.scheduleAll(context)
+                    }) { Text("削除") }
+                }
+            }
+            OutlinedButton(onClick = {
+                android.app.TimePickerDialog(
+                    context,
+                    { _, h, m ->
+                        val store = DigestTimeStore(context)
+                        store.add(String.format("%02d:%02d", h, m))
+                        times = store.times
+                        DailyDigestScheduler.scheduleAll(context)
+                    },
+                    8, 0, true
+                ).show()
+            }) { Text("＋ 通知時刻を追加") }
+            // Android 12+ で「アラームとリマインダー」が未許可だと時刻がずれる（最大10分）ため案内する。
+            val am = context.getSystemService(android.app.AlarmManager::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
+                TextButton(onClick = {
+                    context.startActivity(
+                        Intent(
+                            android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                            android.net.Uri.parse("package:${context.packageName}")
+                        )
+                    )
+                }) { Text("時刻ちょうどに通知するには「アラームとリマインダー」を許可 ›") }
+            }
+        }
     }
 }
 
