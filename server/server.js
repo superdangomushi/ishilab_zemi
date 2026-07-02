@@ -190,6 +190,19 @@ app.post("/api/change-password", async (req, res) => {
   }
 });
 
+// Google アカウントの紐付け（端末でサインインした Google メールをアカウントに記録）。
+app.post("/api/google-link", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const googleEmail = String(req.body?.googleEmail || "").trim();
+  try {
+    await db.setGoogleEmail(account.email, googleEmail);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Moodle 連携: iCal 書き出し URL の取得・保存・即時同期（自己登録ユーザーのみ）。
 app.get("/api/moodle", async (req, res) => {
   const account = await authFromReq(req);
@@ -298,7 +311,9 @@ app.post("/api/ask", async (req, res) => {
   try {
     const tasks = await db.listUpcomingTasks(account.email, { includeDone: true, limit: 100 });
     const summaries = await db.listDailySummaries(account.email, 5);
-    const result = await gemini.ask(question, { tasks, summaries });
+    // アプリが送ってきた端末側カレンダー（Google等）も渡す。
+    const calendar = Array.isArray(req.body?.calendar) ? req.body.calendar.slice(0, 100) : [];
+    const result = await gemini.ask(question, { tasks, summaries, calendar });
 
     // Gemini が返した操作を実行する。
     const applied = [];
@@ -687,6 +702,12 @@ function renderDashboard(tableRows) {
     .badge.kadai { background:#7c3aed; } .badge.yotei { background:#0891b2; }
     .due { font-size:.82rem; color:var(--muted); } .due.soon { color:var(--danger); font-weight:700; }
     .due.warn { color:#d97706; font-weight:600; }
+    /* 課題テーブル: 内容に幅を寄せ、種別・期限・操作は折り返さない */
+    #tasks td, #tasks th { vertical-align:top; }
+    #tasks .col-type, #tasks .col-due, #tasks .col-mid { white-space:nowrap; width:1%; }
+    #tasks .col-mid { text-align:center; }
+    #tasks td:nth-child(2) { width:100%; }
+    #tasks .due .rel { font-size:.75rem; opacity:.85; margin-top:.1rem; }
     .chatlog { display:flex; flex-direction:column; gap:.5rem; max-height:340px; overflow:auto;
                margin-bottom:.7rem; padding:.25rem; }
     .bubble { padding:.6rem .8rem; border-radius:14px; max-width:82%; white-space:pre-wrap; line-height:1.5;
@@ -768,16 +789,34 @@ function renderDashboard(tableRows) {
 
       <section class="card panel" data-panel="tasks">
         <h2>課題・予定</h2>
-        <div class="row" style="margin-bottom:.6rem">
-          <label class="muted">表示:</label>
-          <select id="taskFilter" onchange="renderTasks()">
-            <option value="pending">未完了のみ</option>
-            <option value="all">すべて</option>
-            <option value="kadai">課題のみ</option>
-            <option value="yotei">予定のみ</option>
-            <option value="overdue">期限切れ</option>
-          </select>
-          <button class="ghost small" onclick="loadTasks()">更新</button>
+        <div style="display:grid; gap:.5rem; margin-bottom:.7rem">
+          <input id="taskSearch" placeholder="キーワード検索（内容・詳細）" oninput="renderTasks()">
+          <div class="row">
+            <select id="taskFilter" onchange="renderTasks()">
+              <option value="pending">未完了のみ</option>
+              <option value="active">期限内のみ（未期限切れ）</option>
+              <option value="overdue">期限切れ</option>
+              <option value="all">すべて</option>
+            </select>
+            <select id="taskType" onchange="renderTasks()">
+              <option value="all">課題+予定</option>
+              <option value="kadai">課題のみ</option>
+              <option value="yotei">予定のみ</option>
+            </select>
+            <select id="taskSort" onchange="renderTasks()">
+              <option value="due-asc">締切が近い順</option>
+              <option value="due-desc">締切が遠い順</option>
+              <option value="new">追加が新しい順</option>
+            </select>
+            <button class="ghost small" onclick="loadTasks()">更新</button>
+          </div>
+          <div class="row">
+            <label class="muted">期間</label>
+            <input id="taskFrom" type="date" onchange="renderTasks()" style="width:auto">
+            <span class="muted">〜</span>
+            <input id="taskTo" type="date" onchange="renderTasks()" style="width:auto">
+            <button class="ghost small" onclick="clearTaskPeriod()">期間クリア</button>
+          </div>
         </div>
         <div id="tasks"><p class="muted">読み込み中…</p></div>
         <details style="margin-top:.6rem">
@@ -969,16 +1008,17 @@ function renderDashboard(tableRows) {
       if(ms < 86400e3) return 'warn';
       return '';
     }
-    function dueText(t){
-      const d = parseDeadline(t.deadline_at); if(!d) return '期限未定';
+    // 期限を { base:日時, rel:相対 } に分けて返す（列で2行に分けて表示するため）。
+    function dueParts(t){
+      const d = parseDeadline(t.deadline_at); if(!d) return { base:'期限未定', rel:'' };
       const s = t.deadline_at;
       const base = t.date_only ? s.slice(0,10) : s.slice(0,16);
       const ms = d - new Date();
       let rel;
-      if(ms < 0) rel = '（期限切れ）';
+      if(ms < 0) rel = '期限切れ';
       else { const h = Math.floor(ms/3600e3);
-        rel = h < 24 ? '（あと'+h+'時間）' : '（あと'+Math.floor(h/24)+'日）'; }
-      return base + ' ' + rel;
+        rel = h < 24 ? 'あと'+h+'時間' : 'あと'+Math.floor(h/24)+'日'; }
+      return { base, rel };
     }
     async function loadTasks(){
       if(!auth.email) return;
@@ -988,27 +1028,57 @@ function renderDashboard(tableRows) {
       allTasks = Array.isArray(j.tasks) ? j.tasks : [];
       renderTasks();
     }
-    // 絞り込み（未完了/すべて/課題/予定/期限切れ）。並びはサーバー側で締切昇順。
+    function clearTaskPeriod(){ $('taskFrom').value=''; $('taskTo').value=''; renderTasks(); }
+
+    // 絞り込み（状態・種別・期間・キーワード）＋並び替え。
     function renderTasks(){
       const f = ($('taskFilter')||{}).value || 'pending';
+      const type = ($('taskType')||{}).value || 'all';
+      const sort = ($('taskSort')||{}).value || 'due-asc';
+      const q = (($('taskSearch')||{}).value || '').trim().toLowerCase();
+      const from = ($('taskFrom')||{}).value ? new Date(($('taskFrom').value)+'T00:00:00') : null;
+      const to = ($('taskTo')||{}).value ? new Date(($('taskTo').value)+'T23:59:59') : null;
       const now = new Date();
       let list = allTasks.slice();
+
+      // 状態
       if(f==='pending') list = list.filter(t => t.status!=='done');
-      else if(f==='kadai') list = list.filter(t => t.type==='kadai');
-      else if(f==='yotei') list = list.filter(t => t.type==='yotei');
+      else if(f==='active') list = list.filter(t => { if(t.status==='done') return false; const d=parseDeadline(t.deadline_at); return !d || d>=now; });
       else if(f==='overdue') list = list.filter(t => { const d=parseDeadline(t.deadline_at); return d && d<now && t.status!=='done'; });
+      // 種別
+      if(type==='kadai') list = list.filter(t => t.type==='kadai');
+      else if(type==='yotei') list = list.filter(t => t.type==='yotei');
+      // キーワード
+      if(q) list = list.filter(t => ((t.content||'')+' '+(t.details||'')).toLowerCase().includes(q));
+      // 期間（締切が範囲内。期限未定は範囲指定時は除外）
+      if(from || to) list = list.filter(t => { const d=parseDeadline(t.deadline_at); if(!d) return false; if(from && d<from) return false; if(to && d>to) return false; return true; });
+
+      // 並び替え
+      const val = t => { const d=parseDeadline(t.deadline_at); return d ? d.getTime() : null; };
+      if(sort==='new') list.sort((a,b) => (b.id||0)-(a.id||0));
+      else list.sort((a,b) => {
+        const av=val(a), bv=val(b);
+        if(av==null && bv==null) return 0;
+        if(av==null) return 1;      // 未定は末尾
+        if(bv==null) return -1;
+        return sort==='due-desc' ? bv-av : av-bv;
+      });
+
       if(!list.length){ $('tasks').innerHTML='<p class="muted">該当する項目はありません。</p>'; return; }
       const rows = list.map(t => {
         const done = t.status==='done';
         const label = t.type==='yotei' ? '予定' : '課題';
         const details = t.details ? '<div class="muted">'+escapeHtml(t.details)+'</div>' : '';
+        const due = dueParts(t);
+        const dueHtml = escapeHtml(due.base) +
+          (due.rel ? '<div class="rel">'+escapeHtml(due.rel)+'</div>' : '');
         return '<tr>'+
-          '<td><span class="badge '+(t.type==='yotei'?'yotei':'kadai')+'">'+label+'</span></td>'+
+          '<td class="col-type"><span class="badge '+(t.type==='yotei'?'yotei':'kadai')+'">'+label+'</span></td>'+
           '<td class="'+(done?'done':'')+'">'+escapeHtml(t.content)+details+'</td>'+
-          '<td class="due '+dueClass(t.deadline_at)+'">'+escapeHtml(dueText(t))+'</td>'+
-          '<td style="text-align:center"><input type="checkbox" '+(done?'checked':'')+
+          '<td class="col-due due '+dueClass(t.deadline_at)+'">'+dueHtml+'</td>'+
+          '<td class="col-mid"><input type="checkbox" '+(done?'checked':'')+
             ' onchange="toggle('+t.id+',this.checked)"></td>'+
-          '<td><button class="ghost small" onclick="delTask('+t.id+')">削除</button></td>'+
+          '<td class="col-mid"><button class="ghost small" onclick="delTask('+t.id+')">削除</button></td>'+
         '</tr>';
       }).join('');
       $('tasks').innerHTML =

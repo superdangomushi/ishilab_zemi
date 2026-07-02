@@ -126,6 +126,58 @@ class AiHelperClient {
         }.getOrElse { Result.Error(it.message ?: "更新に失敗しました") }
     }
 
+    /** Moodle の iCal URL を取得する。 */
+    fun fetchMoodleUrl(baseUrl: String, email: String, token: String): kotlin.Result<String> {
+        val url = endpoint(baseUrl, "/api/moodle?email=${enc(email)}&token=${enc(token)}")
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) json.optString("url")
+            else throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+        }
+    }
+
+    /** Moodle の iCal URL を保存する。 */
+    fun saveMoodleUrl(baseUrl: String, email: String, token: String, moodleUrl: String): Result {
+        val url = endpoint(baseUrl, "/api/moodle")
+        val body = JSONObject().put("email", email).put("token", token).put("url", moodleUrl).toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            readResult(conn, onOk = "保存しました")
+        }.getOrElse { Result.Error(it.message ?: "保存に失敗しました") }
+    }
+
+    /** Moodle をいま同期し、取り込んだ件数を返す。 */
+    fun syncMoodle(baseUrl: String, email: String, token: String): kotlin.Result<Int> {
+        val url = endpoint(baseUrl, "/api/moodle/sync")
+        val body = JSONObject().put("email", email).put("token", token).toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) json.optInt("imported")
+            else throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+        }
+    }
+
+    /** サインインした Google アカウントをサーバーのアカウントに紐付ける。 */
+    fun linkGoogle(baseUrl: String, email: String, token: String, googleEmail: String): Result {
+        val url = endpoint(baseUrl, "/api/google-link")
+        val body = JSONObject().put("email", email).put("token", token)
+            .put("googleEmail", googleEmail).toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            readResult(conn, onOk = "連携しました")
+        }.getOrElse { Result.Error(it.message ?: "連携に失敗しました") }
+    }
+
     /** メール＋パスワードでログインし、成功時は API 用トークンを返す（保存して以降の送信に使う）。 */
     fun login(baseUrl: String, email: String, password: String): kotlin.Result<String> =
         postCredentials(baseUrl, "/api/login", email, password)
@@ -172,9 +224,20 @@ class AiHelperClient {
      * 秘書チャット。質問への回答や、「予定入れといて」等の依頼の実行をサーバー（Gemini）に任せる。
      * 成功すると回答文と実行件数を返す。
      */
-    fun ask(baseUrl: String, email: String, token: String, question: String): kotlin.Result<AskResult> {
+    fun ask(
+        baseUrl: String, email: String, token: String, question: String,
+        calendar: List<Pair<String, String>> = emptyList(),
+    ): kotlin.Result<AskResult> {
         val url = endpoint(baseUrl, "/api/ask")
-        val body = JSONObject().put("email", email).put("token", token).put("question", question).toString()
+        val calArr = JSONArray().apply {
+            calendar.forEach { (whenText, title) ->
+                put(JSONObject().put("whenText", whenText).put("title", title))
+            }
+        }
+        val body = JSONObject()
+            .put("email", email).put("token", token).put("question", question)
+            .put("calendar", calArr)
+            .toString()
         return runCatching {
             val conn = openPost(url, "application/json")
             conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }

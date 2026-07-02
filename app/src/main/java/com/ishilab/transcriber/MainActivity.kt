@@ -142,6 +142,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onLoadCalendar = viewModel::loadCalendar,
                         onAddToCalendar = viewModel::addTaskToCalendar,
+                        onLoadMoodle = viewModel::loadMoodle,
+                        onSaveMoodleUrl = viewModel::saveMoodleUrl,
+                        onSyncMoodle = viewModel::syncMoodle,
                     )
                 }
             }
@@ -190,6 +193,9 @@ private fun MainScreen(
     onDisconnectGoogle: () -> Unit,
     onLoadCalendar: () -> Unit,
     onAddToCalendar: (AiHelperClient.Task) -> Unit,
+    onLoadMoodle: () -> Unit,
+    onSaveMoodleUrl: (String) -> Unit,
+    onSyncMoodle: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(0) }
     Box(modifier = Modifier.fillMaxSize()) {
@@ -212,7 +218,8 @@ private fun MainScreen(
                     else -> SecretaryTab(
                         ui, onLogin, onRegister, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone,
                         onLoadSummary, onGenerateSummary,
-                        onConnectGoogle, onDisconnectGoogle, onLoadCalendar, onAddToCalendar
+                        onConnectGoogle, onDisconnectGoogle, onLoadCalendar, onAddToCalendar,
+                        onLoadMoodle, onSaveMoodleUrl, onSyncMoodle
                     )
                 }
             }
@@ -448,6 +455,9 @@ private fun SecretaryTab(
     onDisconnectGoogle: () -> Unit,
     onLoadCalendar: () -> Unit,
     onAddToCalendar: (AiHelperClient.Task) -> Unit,
+    onLoadMoodle: () -> Unit,
+    onSaveMoodleUrl: (String) -> Unit,
+    onSyncMoodle: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -457,18 +467,21 @@ private fun SecretaryTab(
     ) {
         item { AiHelperCard(ui, onLogin, onRegister, onLogout) }
 
+        // Google 連携は端末側サインインなので AIHelper ログイン前でも表示する。
+        item { GoogleCalendarCard(ui, onConnectGoogle, onDisconnectGoogle, onLoadCalendar) }
+
         if (!ui.account.loggedIn) {
             item {
                 Text(
-                    "AIHelper.jp にログインすると、今日の要約・予定・課題の確認と秘書チャットが使えます。",
+                    "AIHelper にログインすると、Moodle 連携や予定・課題の確認、秘書チャットが使えます。",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
             return@LazyColumn
         }
 
-        // ---- Google カレンダー連携 ----
-        item { GoogleCalendarCard(ui, onConnectGoogle, onDisconnectGoogle, onLoadCalendar) }
+        // ---- 連携（アカウントに紐付く） ----
+        item { MoodleCard(ui, onLoadMoodle, onSaveMoodleUrl, onSyncMoodle) }
 
         // ---- 今日の要約 ----
         item { SummaryCard(ui, onLoadSummary, onGenerateSummary) }
@@ -555,6 +568,41 @@ private fun GoogleCalendarCard(
                 }
                 TextButton(onClick = onDisconnectGoogle) { Text("連携を解除") }
             }
+        }
+    }
+}
+
+/** Moodle（iCal）連携カード。URL を保存し、提出物・予定を取り込む。 */
+@Composable
+private fun MoodleCard(
+    ui: UiState,
+    onLoadMoodle: () -> Unit,
+    onSaveMoodleUrl: (String) -> Unit,
+    onSyncMoodle: () -> Unit,
+) {
+    LaunchedEffect(ui.account.email) { onLoadMoodle() }
+    var url by rememberSaveable(ui.moodleUrl) { mutableStateOf(ui.moodleUrl) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Moodle 連携", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Moodle のカレンダー → 書き出し →「カレンダーのURLを取得」で得た iCal URL を貼り付けてください。提出物・予定が課題一覧に取り込まれます。",
+                style = MaterialTheme.typography.bodySmall
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("Moodle iCal URL") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onSaveMoodleUrl(url) }, enabled = !ui.moodleBusy) { Text("保存") }
+                OutlinedButton(onClick = onSyncMoodle, enabled = !ui.moodleBusy && url.isNotBlank()) {
+                    Text("今すぐ同期")
+                }
+            }
+            ui.moodleMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }

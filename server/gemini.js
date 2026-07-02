@@ -221,6 +221,11 @@ async function ask(question, ctx = {}) {
     .map((s) => `[${s.day}] ${s.summary}`)
     .join("\n\n")
     .slice(0, 8000);
+  const calendarText = (ctx.calendar || [])
+    .map((e) => `${e.whenText || e.when || ""} ${e.title || ""}`.trim())
+    .filter((s) => s)
+    .join("\n")
+    .slice(0, 4000);
 
   const prompt = [
     "あなたは利用者専属の有能な秘書です。利用者の課題・予定・日々の記録を把握しており、",
@@ -233,6 +238,9 @@ async function ask(question, ctx = {}) {
     "",
     "■ 最近の日次要約:",
     summariesText || "（なし）",
+    "",
+    "■ カレンダーの予定（Googleカレンダー等）:",
+    calendarText || "（なし）",
     "",
     "【利用者の発話】",
     question,

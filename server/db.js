@@ -102,6 +102,8 @@ async function ensureSchema() {
   await addColumnIfMissing("transcripts", "analyzed_at", "DATETIME NULL");
   // Moodle カレンダーの iCal 書き出し URL（ユーザーごと）。
   await addColumnIfMissing("users", "moodle_ical_url", "VARCHAR(1024) NULL");
+  // 紐付けた Google アカウントのメール（端末でサインインしたもの）。
+  await addColumnIfMissing("users", "google_email", "VARCHAR(255) NULL");
 }
 
 async function addColumnIfMissing(table, column, definition) {
@@ -440,6 +442,10 @@ async function getMoodleUrl(email) {
   return rows[0] ? rows[0].moodle_ical_url : null;
 }
 
+async function setGoogleEmail(email, googleEmail) {
+  await pool.query(`UPDATE users SET google_email = ? WHERE email = ?`, [googleEmail || null, email]);
+}
+
 // Moodle URL を登録済みのユーザー一覧（定期同期用）。
 async function listUsersWithMoodle() {
   const [rows] = await pool.query(
@@ -460,6 +466,7 @@ module.exports = {
   setMoodleUrl,
   getMoodleUrl,
   listUsersWithMoodle,
+  setGoogleEmail,
   // transcripts
   saveTranscript,
   saveAnalysis,

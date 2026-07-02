@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash CHAR(64)     NOT NULL,
   token         CHAR(48)     NOT NULL,
   moodle_ical_url VARCHAR(1024) NULL,
+  google_email  VARCHAR(255) NULL,
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_email (email),
   KEY idx_users_token (token)

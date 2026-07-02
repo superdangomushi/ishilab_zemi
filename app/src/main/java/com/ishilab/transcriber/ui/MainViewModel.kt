@@ -57,6 +57,10 @@ data class UiState(
     val calendarEvents: List<CalendarEvent> = emptyList(),
     val googleBusy: Boolean = false,
     val googleMessage: String? = null,
+    // Moodle 連携
+    val moodleUrl: String = "",
+    val moodleBusy: Boolean = false,
+    val moodleMessage: String? = null,
 ) {
     val anyModelReady: Boolean get() = downloadedModels.isNotEmpty()
     val googleConnected: Boolean get() = googleEmail != null
@@ -150,6 +154,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     loadTasks()
                     loadSummary()
+                    loadMoodle()
+                    refreshGoogle()
                 },
                 onFailure = { e ->
                     _ui.update {
@@ -294,7 +300,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                AIHelper.ask(accountStore.baseUrl, accountStore.email, accountStore.token, q)
+                AIHelper.ask(
+                    accountStore.baseUrl, accountStore.email, accountStore.token, q,
+                    _ui.value.calendarEvents.map { it.whenText to it.title }
+                )
             }
             val reply = result.fold(
                 onSuccess = { it.reply.ifBlank { "（応答なし）" } },
@@ -315,7 +324,66 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshGoogle() {
         val acc = GoogleSignIn.getLastSignedInAccount(getApplication())
         _ui.update { it.copy(googleEmail = acc?.email) }
-        if (acc != null) loadCalendar()
+        if (acc != null) {
+            loadCalendar()
+            // サーバーのアカウントにも Google メールを紐付ける（ログイン済みのときだけ）。
+            val gEmail = acc.email
+            if (accountStore.loggedIn && !gEmail.isNullOrBlank()) {
+                viewModelScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AIHelper.linkGoogle(accountStore.baseUrl, accountStore.email, accountStore.token, gEmail)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Moodle の iCal URL を取得。 */
+    fun loadMoodle() {
+        if (!accountStore.loggedIn) return
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                AIHelper.fetchMoodleUrl(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            r.onSuccess { u -> _ui.update { it.copy(moodleUrl = u) } }
+        }
+    }
+
+    /** Moodle の iCal URL を保存。 */
+    fun saveMoodleUrl(url: String) {
+        if (!accountStore.loggedIn) return
+        _ui.update { it.copy(moodleBusy = true, moodleMessage = null, moodleUrl = url) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AIHelper.saveMoodleUrl(accountStore.baseUrl, accountStore.email, accountStore.token, url.trim())
+            }
+            _ui.update {
+                when (result) {
+                    is AiHelperClient.Result.Ok -> it.copy(moodleBusy = false, moodleMessage = "保存しました")
+                    is AiHelperClient.Result.Error -> it.copy(moodleBusy = false, moodleMessage = result.message)
+                }
+            }
+        }
+    }
+
+    /** Moodle をいま同期して課題・予定を取り込む。 */
+    fun syncMoodle() {
+        if (!accountStore.loggedIn || _ui.value.moodleBusy) return
+        _ui.update { it.copy(moodleBusy = true, moodleMessage = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AIHelper.syncMoodle(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            result.fold(
+                onSuccess = { n ->
+                    _ui.update { it.copy(moodleBusy = false, moodleMessage = "$n 件取り込みました") }
+                    loadTasks()
+                },
+                onFailure = { e ->
+                    _ui.update { it.copy(moodleBusy = false, moodleMessage = "同期失敗: ${e.message}") }
+                }
+            )
+        }
     }
 
     fun onGoogleDisconnected() {
