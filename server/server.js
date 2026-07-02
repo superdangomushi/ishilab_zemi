@@ -380,6 +380,87 @@ app.post("/api/waseda", async (req, res) => {
   }
 });
 
+// ---- Waseda 時間割の取り込み（スクレイパをサーバー側で実行） ----
+// Selenium でのログイン〜取得は数分かかるため非同期ジョブとして走らせ、状況をポーリングで返す。
+// 状態はメモリ管理（サーバー再起動で消えるが、取り込みは冪等なので再実行すればよい）。
+const wasedaSyncJobs = new Map(); // email -> { state:'running'|'done'|'error', message, log, startedAt }
+
+app.post("/api/waseda/sync", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const current = wasedaSyncJobs.get(account.email);
+  if (current?.state === "running") {
+    return res.status(409).json({ ok: false, error: "すでに取り込み実行中です" });
+  }
+  try {
+    const row = await db.getWasedaCreds(account.email);
+    if (!row?.waseda_user || !row?.waseda_password_enc) {
+      return res.status(400).json({ ok: false, error: "先に Waseda アカウントを保存してください" });
+    }
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+  const job = { state: "running", message: "時間割を取得しています…", log: "", startedAt: Date.now() };
+  wasedaSyncJobs.set(account.email, job);
+  runWasedaScraper(account, job);
+  res.json({ ok: true, started: true });
+});
+
+app.get("/api/waseda/sync/status", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const job = wasedaSyncJobs.get(account.email);
+  if (!job) return res.json({ ok: true, state: "idle", message: "" });
+  res.json({ ok: true, state: job.state, message: job.message });
+});
+
+// スクレイパを子プロセスで実行する。資格情報はスクレイパ自身が /api/waseda/credentials から取る。
+function runWasedaScraper(account, job) {
+  const { spawn } = require("child_process");
+  const scriptDir = path.join(__dirname, "scraper");
+  const child = spawn(process.env.PYTHON_BIN || "python3", ["waseda_scraper.py"], {
+    cwd: scriptDir,
+    env: {
+      ...process.env,
+      AIHELPER_URL: `http://localhost:${PORT}`,
+      AIHELPER_EMAIL: account.email,
+      AIHELPER_TOKEN: account.token,
+    },
+  });
+  const append = (chunk) => {
+    job.log = (job.log + chunk.toString()).slice(-4000);
+    // スクレイパの進捗表示（「ログイン中…」等）をそのままステータスに反映する。
+    const lines = job.log.trim().split("\n").filter((l) => l.trim());
+    if (lines.length) job.message = lines[lines.length - 1].slice(0, 200);
+  };
+  child.stdout.on("data", append);
+  child.stderr.on("data", append);
+  child.on("error", (e) => {
+    job.state = "error";
+    job.message = `スクレイパを起動できません: ${e.message}（サーバーに python3 と selenium が必要です）`;
+  });
+  child.on("close", (code) => {
+    if (job.state === "error") return;
+    if (code === 0) {
+      const m = job.log.match(/抽出した科目数:\s*(\d+)/);
+      job.state = "done";
+      job.message = m ? `取り込み完了（${m[1]} 科目）` : "取り込み完了";
+    } else {
+      job.state = "error";
+      const tail = job.log.trim().split("\n").slice(-3).join(" / ");
+      job.message = `取り込み失敗: ${tail.slice(0, 300) || `終了コード ${code}`}`;
+    }
+  });
+  // 念のためのタイムアウト（15分）。
+  setTimeout(() => {
+    if (job.state === "running") {
+      job.state = "error";
+      job.message = "取り込みがタイムアウトしました（15分）";
+      child.kill("SIGKILL");
+    }
+  }, 15 * 60_000).unref();
+}
+
 // スクレイパ用: 本人のトークンで認証し、復号済みの資格情報を返す。
 app.get("/api/waseda/credentials", async (req, res) => {
   const account = await authFromReq(req);
@@ -1118,9 +1199,18 @@ function renderDashboard(tableRows) {
         <input id="wasedaPw" type="password" placeholder="Waseda パスワード" autocomplete="new-password">
         <div class="row" style="margin-top:.6rem">
           <button onclick="saveWaseda()">保存</button>
+          <button id="wasedaSyncBtn" class="ghost" onclick="syncWaseda()">時間割を取り込む</button>
           <button class="ghost" onclick="clearWaseda()">連携解除</button>
           <span id="wasedaState" class="muted"></span>
         </div>
+        <div id="wasedaSyncBox" style="display:none; margin-top:.6rem">
+          <div style="height:6px; background:#e5e7eb; border-radius:999px; overflow:hidden">
+            <div id="wasedaSyncBar" style="height:100%; width:30%; background:var(--accent); border-radius:999px;
+                 animation: slide 1.2s ease-in-out infinite alternate"></div>
+          </div>
+          <p id="wasedaSyncMsg" class="muted" style="margin:.4rem 0 0"></p>
+        </div>
+        <style>@keyframes slide { from { margin-left:0 } to { margin-left:70% } }</style>
         <hr>
         <button class="ghost" onclick="logout()">ログアウト</button>
       </section>
@@ -1220,6 +1310,9 @@ function renderDashboard(tableRows) {
           $('wasedaUser').value = j.wasedaUser || '';
           $('wasedaState').textContent = j.hasPassword ? '登録済み（パスワード保存済み）' : '';
         }
+        // 取り込みが実行中のままならステータス表示を復元する（画面更新後も追える）。
+        const s = await (await fetch('/api/waseda/sync/status',{headers:headers()})).json();
+        if(s.ok && s.state==='running'){ showWasedaProgress(s.message||'取り込み中…'); pollWasedaSync(); }
       } catch(e){}
     }
     async function saveWaseda(){
@@ -1237,6 +1330,39 @@ function renderDashboard(tableRows) {
       const j = await r.json();
       if(j.ok){ $('wasedaUser').value=''; $('wasedaPw').value=''; $('wasedaState').textContent='✓ 解除しました'; }
       else $('wasedaState').textContent='✗ '+(j.error||'解除失敗');
+    }
+    // 時間割の取り込み（サーバーでスクレイパを実行し、完了まで状況をポーリング表示）。
+    let wasedaPollTimer = null;
+    async function syncWaseda(){
+      $('wasedaState').textContent='';
+      const r = await fetch('/api/waseda/sync',{method:'POST',headers:headers()});
+      const j = await r.json();
+      if(!j.ok && !/実行中/.test(j.error||'')){ $('wasedaState').textContent='✗ '+(j.error||'開始失敗'); return; }
+      showWasedaProgress('時間割を取得しています…');
+      pollWasedaSync();
+    }
+    function showWasedaProgress(msg){
+      $('wasedaSyncBox').style.display=''; $('wasedaSyncBar').style.display='';
+      $('wasedaSyncMsg').textContent = msg;
+      $('wasedaSyncBtn').disabled = true;
+    }
+    async function pollWasedaSync(){
+      clearTimeout(wasedaPollTimer);
+      try {
+        const r = await fetch('/api/waseda/sync/status',{headers:headers()});
+        const j = await r.json();
+        if(j.ok){
+          if(j.state==='running'){
+            $('wasedaSyncMsg').textContent = '取り込み中: '+(j.message||'…');
+            wasedaPollTimer = setTimeout(pollWasedaSync, 3000);
+            return;
+          }
+          $('wasedaSyncBar').style.display='none';
+          $('wasedaSyncMsg').textContent = (j.state==='done' ? '✓ ' : (j.state==='error' ? '✗ ' : '')) + (j.message||'');
+          if(j.state==='done') loadTasks();
+        }
+      } catch(e){ $('wasedaSyncMsg').textContent='状況の取得に失敗しました'; }
+      $('wasedaSyncBtn').disabled = false;
     }
 
     // ---- 資料要約 ----

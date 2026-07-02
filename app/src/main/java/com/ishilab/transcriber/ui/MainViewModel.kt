@@ -66,6 +66,9 @@ data class UiState(
     val wasedaHasPassword: Boolean = false,
     val wasedaBusy: Boolean = false,
     val wasedaMessage: String? = null,
+    /** サーバー側で時間割取り込み（スクレイパ）実行中か。 */
+    val wasedaSyncRunning: Boolean = false,
+    val wasedaSyncMessage: String? = null,
     // カレンダー: 選択日の要約
     val daySummaryDay: String? = null,
     val daySummary: String? = null,
@@ -433,6 +436,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         it.copy(wasedaBusy = false, wasedaMessage = result.message)
                 }
             }
+        }
+    }
+
+    /**
+     * Waseda 時間割の取り込みをサーバーで実行し、完了までステータスをポーリングして表示する。
+     * スクレイパのログイン〜取得は数分かかることがある。
+     */
+    fun syncWaseda() {
+        if (!accountStore.loggedIn || _ui.value.wasedaSyncRunning) return
+        _ui.update { it.copy(wasedaSyncRunning = true, wasedaSyncMessage = "取り込みを開始しています…") }
+        viewModelScope.launch {
+            val start = withContext(Dispatchers.IO) {
+                AIHelper.startWasedaSync(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            if (start is AiHelperClient.Result.Error && !start.message.contains("実行中")) {
+                _ui.update { it.copy(wasedaSyncRunning = false, wasedaSyncMessage = start.message) }
+                return@launch
+            }
+            // 3秒間隔で最長15分ポーリング。
+            repeat(300) {
+                kotlinx.coroutines.delay(3_000)
+                val status = withContext(Dispatchers.IO) {
+                    AIHelper.fetchWasedaSyncStatus(accountStore.baseUrl, accountStore.email, accountStore.token)
+                }.getOrNull() ?: return@repeat
+                val (state, message) = status
+                if (state == "running") {
+                    _ui.update { it.copy(wasedaSyncMessage = message.ifBlank { "取り込み中…" }) }
+                } else {
+                    _ui.update { it.copy(wasedaSyncRunning = false, wasedaSyncMessage = message) }
+                    if (state == "done") loadTasks()
+                    return@launch
+                }
+            }
+            _ui.update { it.copy(wasedaSyncRunning = false, wasedaSyncMessage = "取り込みの完了を確認できませんでした") }
         }
     }
 

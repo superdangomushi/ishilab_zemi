@@ -216,6 +216,35 @@ class AiHelperClient {
         }.getOrElse { Result.Error(it.message ?: "保存に失敗しました") }
     }
 
+    /** Waseda 時間割の取り込みをサーバー側で開始する（スクレイパ実行。完了はステータスで確認）。 */
+    fun startWasedaSync(baseUrl: String, email: String, token: String): Result {
+        val url = endpoint(baseUrl, "/api/waseda/sync")
+        val body = JSONObject().put("email", email).put("token", token).toString()
+        return runCatching {
+            val conn = openPost(url, "application/json")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            readResult(conn, onOk = "取り込みを開始しました")
+        }.getOrElse { Result.Error(it.message ?: "開始に失敗しました") }
+    }
+
+    /** Waseda 取り込みの進行状況。state は idle / running / done / error。 */
+    fun fetchWasedaSyncStatus(baseUrl: String, email: String, token: String): kotlin.Result<Pair<String, String>> {
+        val url = endpoint(baseUrl, "/api/waseda/sync/status?email=${enc(email)}&token=${enc(token)}")
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                json.optString("state", "idle") to json.optString("message")
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
     /** サインインした Google アカウントをサーバーのアカウントに紐付ける。 */
     fun linkGoogle(baseUrl: String, email: String, token: String, googleEmail: String): Result {
         val url = endpoint(baseUrl, "/api/google-link")

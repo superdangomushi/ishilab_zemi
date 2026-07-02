@@ -153,6 +153,7 @@ class MainActivity : ComponentActivity() {
                         onSyncMoodle = viewModel::syncMoodle,
                         onLoadWaseda = viewModel::loadWaseda,
                         onSaveWaseda = viewModel::saveWaseda,
+                        onSyncWaseda = viewModel::syncWaseda,
                         onLoadDaySummary = viewModel::loadDaySummary,
                     )
                 }
@@ -208,6 +209,7 @@ private fun MainScreen(
     onSyncMoodle: () -> Unit,
     onLoadWaseda: () -> Unit,
     onSaveWaseda: (String, String) -> Unit,
+    onSyncWaseda: () -> Unit,
     onLoadDaySummary: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(0) }
@@ -234,7 +236,7 @@ private fun MainScreen(
                         ui, onLogin, onRegister, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone,
                         onLoadSummary, onGenerateSummary,
                         onConnectGoogle, onDisconnectGoogle, onLoadCalendar, onAddToCalendar,
-                        onLoadMoodle, onSaveMoodleUrl, onSyncMoodle, onLoadWaseda, onSaveWaseda
+                        onLoadMoodle, onSaveMoodleUrl, onSyncMoodle, onLoadWaseda, onSaveWaseda, onSyncWaseda
                     )
                 }
             }
@@ -619,6 +621,7 @@ private fun SecretaryTab(
     onSyncMoodle: () -> Unit,
     onLoadWaseda: () -> Unit,
     onSaveWaseda: (String, String) -> Unit,
+    onSyncWaseda: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -643,7 +646,7 @@ private fun SecretaryTab(
 
         // ---- 連携（アカウントに紐付く） ----
         item { MoodleCard(ui, onLoadMoodle, onSaveMoodleUrl, onSyncMoodle) }
-        item { WasedaCard(ui, onLoadWaseda, onSaveWaseda) }
+        item { WasedaCard(ui, onLoadWaseda, onSaveWaseda, onSyncWaseda) }
 
         // ---- 今日の要約 ----
         item { SummaryCard(ui, onLoadSummary, onGenerateSummary) }
@@ -765,8 +768,11 @@ private fun MoodleCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { onSaveMoodleUrl(url) }, enabled = !ui.moodleBusy) { Text("保存") }
                 OutlinedButton(onClick = onSyncMoodle, enabled = !ui.moodleBusy && url.isNotBlank()) {
-                    Text("今すぐ同期")
+                    Text("課題・予定を取り込む")
                 }
+            }
+            if (ui.moodleBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
             ui.moodleMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
@@ -779,6 +785,7 @@ private fun WasedaCard(
     ui: UiState,
     onLoadWaseda: () -> Unit,
     onSaveWaseda: (String, String) -> Unit,
+    onSyncWaseda: () -> Unit,
 ) {
     LaunchedEffect(ui.account.email) { onLoadWaseda() }
     var user by rememberSaveable(ui.wasedaUser) { mutableStateOf(ui.wasedaUser) }
@@ -812,11 +819,27 @@ private fun WasedaCard(
                     enabled = !ui.wasedaBusy && user.isNotBlank() &&
                         (password.isNotEmpty() || ui.wasedaHasPassword)
                 ) { Text("保存") }
+                OutlinedButton(
+                    onClick = onSyncWaseda,
+                    enabled = ui.wasedaHasPassword && !ui.wasedaSyncRunning
+                ) { Text("時間割を取り込む") }
                 if (ui.wasedaHasPassword) {
                     Text("パスワード保存済み", style = MaterialTheme.typography.bodySmall)
                 }
             }
             ui.wasedaMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            // 取り込み実行中のステータスバー（サーバー側スクレイパの進行状況を表示）。
+            if (ui.wasedaSyncRunning) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            ui.wasedaSyncMessage?.let {
+                Text(
+                    if (ui.wasedaSyncRunning) "取り込み中: $it" else it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (ui.wasedaSyncRunning) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
