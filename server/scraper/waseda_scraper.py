@@ -97,77 +97,202 @@ def login(driver, username, password):
 
 
 def open_timetable(driver):
-    """coursereg ポータルから科目登録/時間割ページを開き HTML を返す。"""
+    """coursereg ポータルから科目登録ページを開き HTML を返す。
+
+    ポータルの「科目登録」リンクは JavaScript の doSubmit() で hidden form (F01) を
+    送信する仕組み。Selenium で同じ手順を再現する:
+      1. ポータルページ (simpleportal.php) を開く
+      2. F01 フォームの hidden フィールドに doSubmit() と同じ値をセットして submit
+      3. 新しいウィンドウに科目登録ページ (epb1110.htm) が開くので、そちらに切り替える
+    """
     from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
     driver.get(PORTAL)
     time.sleep(3)
-    # 「科目登録」または「時間割」等のリンクを探してクリック（表記ゆれに対応）。
-    for kw in ["科目登録照会", "科目登録", "時間割", "履修"]:
-        try:
-            link = driver.find_element(By.XPATH, f"//a[contains(., '{kw}')]")
-            link.click()
-            time.sleep(4)
-            # 新規ウィンドウが開く場合に切替
-            if len(driver.window_handles) > 1:
-                driver.switch_to.window(driver.window_handles[-1])
-                time.sleep(2)
-            break
-        except Exception:
-            continue
+
+    # doSubmit('https://wcrs.waseda.jp/kyomu/epb1110.htm', 'eStudent', 'ea02', '0', 'ApWindow_00')
+    # と同等の操作を Selenium で実行する。
+    js = """
+    var f = document.F01;
+    if (!f) return false;
+    f.url.value = 'https://wcrs.waseda.jp/kyomu/epb1110.htm';
+    f.HID_P6.value = 'eStudent';
+    f.HID_P8.value = 'ea02';
+    f.pageflag.value = '1000';
+    f.status.value = '0';
+    // 新しいウィンドウを先に開いてから target を合わせる
+    window.open('', 'ApWindow_00', 'menubar=no,status=yes,scrollbars=yes,location=no,resizable=yes');
+    f.target = 'ApWindow_00';
+    f.submit();
+    return true;
+    """
+    ok = driver.execute_script(js)
+    if not ok:
+        # フォームが見つからなかった場合のフォールバック: リンクをクリック
+        for kw in ["科目登録照会", "科目登録", "時間割", "履修"]:
+            try:
+                link = driver.find_element(By.XPATH, f"//a[contains(., '{kw}')]")
+                link.click()
+                time.sleep(4)
+                break
+            except Exception:
+                continue
+
+    # 新しいウィンドウに切り替える（科目登録ページがそこに開く）。
+    time.sleep(4)
+    if len(driver.window_handles) > 1:
+        driver.switch_to.window(driver.window_handles[-1])
+        time.sleep(3)
+
+    # 科目登録ページが完全に読み込まれるまで待つ。
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda d: "登録科目一覧" in d.page_source or "履修" in d.title
+        )
+    except Exception:
+        pass
+    time.sleep(2)
     return driver.page_source
 
 
-def parse_timetable(html):
-    """時間割 HTML から [{term, day, period, name, room}] を抽出する（要調整・ヒューリスティック）。
+# 全角数字→半角変換テーブル
+_ZEN2HAN = str.maketrans("０１２３４５６７８９", "0123456789")
 
-    多くの Waseda 時間割は「曜日(月〜土)を列、時限(1〜7)を行」とする表。
-    セル内テキストから科目名と教室(〇号館〇教室 等)を推定する。
+
+def _normalize_num(s):
+    """全角数字を半角に変換して返す。"""
+    return s.translate(_ZEN2HAN)
+
+
+def _parse_period(text):
+    """時限テキストから (開始時限, 終了時限) を返す。
+
+    "１" → (1, 1), "１～２" → (1, 2), "１～４" → (1, 4),
+    "その他"/"フルオンデマンド" → (None, None)
+    """
+    t = _normalize_num(text.strip())
+    m = re.match(r"(\d+)\s*[～〜~-]\s*(\d+)", t)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.match(r"(\d+)", t)
+    if m:
+        return int(m.group(1)), int(m.group(1))
+    return None, None
+
+
+def parse_timetable(html):
+    """科目登録ページの「■登録科目一覧」テーブルをパースする。
+
+    テーブルは行リスト形式で、各行の列は:
+      0:学期 / 1:曜日 / 2:時限 / 3:開講学部 / 4:備考 / 5:科目名 /
+      6:担当教員 / 7:キャンパス / 8:教室名 / 9:科目区分 / 10:単位 / 11:状態
+    時限が "１～４" のように範囲の場合は、start_time/end_time は None のまま period だけ入れる。
     """
     soup = BeautifulSoup(html, "html.parser")
     courses = []
-    room_re = re.compile(r"([0-9０-９A-Za-z]*号館[^\s／/]*|[^\s／/]*教室|[A-Z]?\d{2,}[- ]?\d+)")
 
+    # ■登録科目一覧 のヘッダ行（学期/曜日/時限/…）を含むテーブルを見つける。
+    target_table = None
     for table in soup.find_all("table"):
-        header_cells = [c.get_text(strip=True) for c in table.find_all(["th", "td"], limit=10)]
-        header_text = "".join(header_cells)
-        if not ("月" in header_text and "火" in header_text):
-            continue  # 曜日ヘッダを持つ表だけ対象
+        first_row = table.find("tr")
+        if not first_row:
+            continue
+        cells = first_row.find_all(["th", "td"])
+        header = [c.get_text(strip=True) for c in cells]
+        # ヘッダに「学期」「曜日」「時限」「科目名」が含まれていれば対象テーブル
+        header_joined = "".join(header)
+        if "学期" in header_joined and "曜日" in header_joined and "科目名" in header_joined:
+            target_table = table
+            break
 
-        rows = table.find_all("tr")
-        # ヘッダ行の曜日カラム位置を特定
-        head = rows[0].find_all(["th", "td"])
-        day_cols = {}
-        for i, cell in enumerate(head):
-            t = cell.get_text(strip=True)
-            for d in DAYS:
-                if t == d or t.startswith(d):
-                    day_cols[i] = d
-        if not day_cols:
+    if not target_table:
+        return courses
+
+    rows = target_table.find_all("tr")
+    if len(rows) < 2:
+        return courses
+
+    # ヘッダ行から列インデックスを特定（列順が変わっても対応）
+    header_cells = rows[0].find_all(["th", "td"])
+    col_map = {}
+    for i, cell in enumerate(header_cells):
+        t = cell.get_text(strip=True)
+        if "学期" in t:
+            col_map["term"] = i
+        elif "曜日" in t:
+            col_map["day"] = i
+        elif "時限" in t:
+            col_map["period"] = i
+        elif "科目名" in t:
+            col_map["name"] = i
+        elif "担当教員" in t:
+            col_map["instructor"] = i
+        elif "キャンパス" in t:
+            col_map["campus"] = i
+        elif "教室" in t:
+            col_map["room"] = i
+        elif "科目区分" in t:
+            col_map["category"] = i
+        elif "単位" in t:
+            col_map["credits"] = i
+        elif "状態" in t or "希望順位" in t:
+            col_map["status"] = i
+
+    def cell_text(cells, key):
+        idx = col_map.get(key)
+        if idx is None or idx >= len(cells):
+            return ""
+        return cells[idx].get_text(" ", strip=True)
+
+    # データ行を処理
+    for row in rows[1:]:
+        cells = row.find_all(["th", "td"])
+        if len(cells) < 6:
+            continue
+        name = cell_text(cells, "name").strip()
+        if not name:
             continue
 
-        for r in rows[1:]:
-            cells = r.find_all(["th", "td"])
-            if not cells:
-                continue
-            period_txt = cells[0].get_text(" ", strip=True)
-            m = re.search(r"(\d+)", period_txt)
-            period = int(m.group(1)) if m else None
-            for i, cell in enumerate(cells):
-                if i not in day_cols:
-                    continue
-                text = cell.get_text("\n", strip=True)
-                if not text:
-                    continue
-                lines = [l for l in text.split("\n") if l.strip()]
-                name = lines[0] if lines else text
-                room = ""
-                rm = room_re.search(text)
-                if rm:
-                    room = rm.group(1)
-                courses.append({
-                    "day": day_cols[i], "period": period,
-                    "name": name[:255], "room": room, "term": None,
-                })
+        term_raw = cell_text(cells, "term").strip()
+        day_raw = cell_text(cells, "day").strip()
+        period_raw = cell_text(cells, "period").strip()
+        room = cell_text(cells, "room").strip()
+        campus = cell_text(cells, "campus").strip()
+
+        # 曜日: "月", "火", ... / "無" はオンデマンド等（None にする）
+        day = day_raw if day_raw in DAYS else None
+
+        # 時限: "１～２" 等の範囲もパース
+        period_start, period_end = _parse_period(period_raw)
+
+        # 学期の正規化: "春学期" → "春", "秋学期" → "秋" 等
+        term = term_raw.replace("学期", "").replace("クォーター", "Q").strip()
+
+        # 教室にキャンパス情報も含める（教室名が空のときはキャンパスだけ使う）
+        if room and campus:
+            display_room = room
+        elif campus:
+            display_room = campus
+        else:
+            display_room = room
+
+        course = {
+            "term": term or None,
+            "day": day,
+            "period": period_start,
+            "name": name[:255],
+            "room": display_room or None,
+        }
+
+        # 時限が範囲の場合（1～4 等）は start_time/end_time で表現
+        if period_start and period_end and period_end > period_start:
+            course["start_time"] = str(period_start)
+            course["end_time"] = str(period_end)
+
+        courses.append(course)
+
     return courses
 
 
@@ -208,6 +333,34 @@ def post_courses(courses):
     print("サーバー登録:", r.json())
 
 
+def filter_by_current_semester(courses):
+    """現在の月に応じて、該当学期の科目だけを残す。
+
+    4〜9月 → 春学期系 (春, 春Q, 夏Q, 夏季集中, 通年) を採用
+    10〜3月 → 秋学期系 (秋, 秋Q, 冬Q, 冬季集中, 通年) を採用
+    """
+    from datetime import datetime
+    month = datetime.now().month
+    is_spring = 4 <= month <= 9
+
+    # 通年は常に含める
+    ALWAYS = {"通年"}
+    SPRING = {"春", "春Q", "夏Q", "夏季集中"}
+    FALL = {"秋", "秋Q", "冬Q", "冬季集中"}
+
+    allowed = ALWAYS | (SPRING if is_spring else FALL)
+
+    filtered = []
+    for c in courses:
+        term = (c.get("term") or "").strip()
+        if not term:
+            # term が空なら通す（情報不足のため除外しない）
+            filtered.append(c)
+        elif term in allowed:
+            filtered.append(c)
+    return filtered
+
+
 def main():
     dump = None
     headful = "--headful" in sys.argv
@@ -237,8 +390,12 @@ def main():
             with open(dump, "w", encoding="utf-8") as f:
                 f.write(html)
             print(f"HTML を保存しました: {dump}（parse_timetable のセレクタ調整に使ってください）")
-        courses = parse_timetable(html)
-        print(f"抽出した科目数: {len(courses)}")
+        all_courses = parse_timetable(html)
+        print(f"全科目数: {len(all_courses)}")
+        for c in all_courses:
+            print("  (全)", c)
+        courses = filter_by_current_semester(all_courses)
+        print(f"現在の学期に該当する科目数: {len(courses)}")
         for c in courses:
             print(" ", c)
         if courses and os.environ.get("AIHELPER_URL"):
