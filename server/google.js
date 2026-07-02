@@ -149,6 +149,33 @@ function parseMillis(s) {
   return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)).getTime();
 }
 
+async function insertRecurringEvent(accessToken, summary, location, startIso, endIso, recurrenceRules) {
+  const body = {
+    summary,
+    location,
+    start: {
+      dateTime: startIso,
+      timeZone: "Asia/Tokyo",
+    },
+    end: {
+      dateTime: endIso,
+      timeZone: "Asia/Tokyo",
+    },
+    recurrence: recurrenceRules,
+  };
+  const res = await fetch(API, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j?.error?.message || `カレンダー繰り返し登録エラー (${res.status})`);
+}
+
 module.exports = {
   SCOPE,
   isConfigured,
@@ -157,4 +184,5 @@ module.exports = {
   accessTokenOf,
   listUpcomingEvents,
   insertDeadline,
+  insertRecurringEvent,
 };

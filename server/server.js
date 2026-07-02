@@ -421,11 +421,100 @@ app.post("/api/google/add-event", async (req, res) => {
     if (!row) return res.status(400).json({ ok: false, error: "Google アカウントが未連携です" });
     const token = await google.accessTokenOf(decryptCred(row.refresh_token));
     await google.insertDeadline(token, content, String(req.body?.deadline || ""), Boolean(req.body?.dateOnly));
-    res.json({ ok: true, googleEmail: row.google_email });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+// 時間割を指定アカウントの Google カレンダーに毎週繰り返しで一括登録する。
+app.post("/api/google/sync-courses", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const googleEmail = String(req.body?.googleEmail || "").trim();
+  try {
+    const rows = await db.listGoogleAccounts(account.email);
+    const row = rows.find((r) => r.google_email === googleEmail) || rows[0];
+    if (!row) return res.status(400).json({ ok: false, error: "Google アカウントが未連携です" });
+
+    const courses = await db.listCourses(account.email);
+    if (!courses.length) {
+      return res.status(400).json({ ok: false, error: "時間割が空のため同期できません" });
+    }
+
+    const token = await google.accessTokenOf(decryptCred(row.refresh_token));
+
+    // 早稲田100分授業の時限定義
+    const periods = {
+      1: { start: "09:00:00", end: "10:40:00" },
+      2: { start: "10:55:00", end: "12:35:00" },
+      3: { start: "13:15:00", end: "14:55:00" },
+      4: { start: "15:10:00", end: "16:50:00" },
+      5: { start: "17:05:00", end: "18:45:00" },
+      6: { start: "18:55:00", end: "20:35:00" },
+      7: { start: "20:45:00", end: "22:25:00" },
+    };
+
+    const daysMap = { "日": 0, "月": 1, "火": 2, "水": 3, "木": 4, "金": 5, "土": 6 };
+
+    // 学期終了日（UNTILルール）の決定
+    const now = new Date();
+    const month = now.getMonth() + 1; // 1-indexed
+    const isSpring = month >= 4 && month <= 9;
+    const year = now.getFullYear();
+    const untilStr = isSpring ? `${year}0731T235959Z` : `${year + (month <= 3 ? 0 : 1)}0131T235959Z`;
+
+    let successCount = 0;
+    for (const c of courses) {
+      const dayNum = daysMap[c.day];
+      if (dayNum === undefined) continue; // 曜日が「無」等はカレンダー登録不可のためスキップ
+
+      let startTime = "";
+      let endTime = "";
+      if (c.start_time && c.end_time) {
+        const startP = periods[c.start_time];
+        const endP = periods[c.end_time];
+        if (startP && endP) {
+          startTime = startP.start;
+          endTime = endP.end;
+        }
+      } else if (c.period) {
+        const p = periods[c.period];
+        if (p) {
+          startTime = p.start;
+          endTime = p.end;
+        }
+      }
+
+      if (!startTime || !endTime) continue;
+
+      // 次の該当曜日の日付を計算して開始日とする
+      const startDt = new Date();
+      const currentDay = startDt.getDay();
+      let diff = dayNum - currentDay;
+      if (diff <= 0) diff += 7; // 今日より後（来週のその曜日）
+      startDt.setDate(startDt.getDate() + diff);
+
+      // YYYY-MM-DD フォーマット（サーバーのローカル日付ベース）
+      const pad = (n) => String(n).padStart(2, "0");
+      const ymd = `${startDt.getFullYear()}-${pad(startDt.getMonth() + 1)}-${pad(startDt.getDate())}`;
+
+      const startIso = `${ymd}T${startTime}`;
+      const endIso = `${ymd}T${endTime}`;
+
+      const summary = c.name;
+      const location = c.room || "";
+      const recurrence = [`RRULE:FREQ=WEEKLY;UNTIL=${untilStr}`];
+
+      await google.insertRecurringEvent(token, summary, location, startIso, endIso, recurrence);
+      successCount++;
+    }
+
+    res.json({ ok: true, count: successCount, googleEmail: row.google_email });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 
 // Moodle 連携: iCal 書き出し URL の取得・保存・即時同期（自己登録ユーザーのみ）。
 app.get("/api/moodle", async (req, res) => {
@@ -712,6 +801,33 @@ app.post("/api/ask", async (req, res) => {
     const courses = await db.listCourses(account.email);
     // アプリが送ってきた端末側カレンダー（Google等）も渡す。
     const calendar = Array.isArray(req.body?.calendar) ? req.body.calendar.slice(0, 100) : [];
+    
+    // 連携している Google カレンダーの直近の予定も自動取得してマージする
+    try {
+      const gAccounts = await db.listGoogleAccounts(account.email);
+      for (const r of gAccounts) {
+        try {
+          const gToken = await google.accessTokenOf(decryptCred(r.refresh_token));
+          const gEvents = await google.listUpcomingEvents(gToken, 20);
+          for (const ev of gEvents) {
+            // 開始時間とタイトルが一致する予定は重複としてスキップ
+            const exists = calendar.some(x => x.title === ev.title && Math.abs((x.startMillis || 0) - ev.startMillis) < 60000);
+            if (!exists) {
+              calendar.push({
+                title: ev.title,
+                whenText: ev.whenText,
+                startMillis: ev.startMillis,
+              });
+            }
+          }
+        } catch (ge) {
+          console.error(`Ask連携カレンダー取得失敗 (${r.google_email}):`, ge.message);
+        }
+      }
+    } catch (e) {
+      console.error("Askカレンダーアカウントリスト取得失敗:", e.message);
+    }
+
     // 授業の質問にも答えられるよう、資料要約と質問に関連する文字起こし抜粋も渡す。
     const documents = await db.listDocuments(account.email, 20);
     const snippets = await db.searchTranscriptSnippets(
@@ -1329,6 +1445,14 @@ function renderDashboard(tableRows) {
           </div>
           <p id="wasedaSyncMsg" class="muted" style="margin:.4rem 0 0"></p>
         </div>
+        <div id="wasedaCoursesBox" style="display:none; margin-top:.8rem">
+          <h4 style="font-size:.9rem; margin:.4rem 0 .2rem">取り込んだ時間割</h4>
+          <div id="wasedaCourses" style="font-size:.85rem; margin-bottom:.5rem; line-height:1.6"></div>
+          <div class="row">
+            <button class="ghost small" onclick="syncWasedaCoursesToGoogle()">Google カレンダーに同期</button>
+            <span id="wasedaSyncGoogleState" class="muted"></span>
+          </div>
+        </div>
         <style>@keyframes slide { from { margin-left:0 } to { margin-left:70% } }</style>
         <hr>
         <h3 style="font-size:.95rem; margin:.2rem 0 .6rem">Google カレンダー連携</h3>
@@ -1529,7 +1653,42 @@ function renderDashboard(tableRows) {
         // 取り込みが実行中のままならステータス表示を復元する（画面更新後も追える）。
         const s = await (await fetch('/api/waseda/sync/status',{headers:headers()})).json();
         if(s.ok && s.state==='running'){ showWasedaProgress(s.message||'取り込み中…'); pollWasedaSync(); }
+        loadWasedaCourses();
       } catch(e){}
+    }
+    async function loadWasedaCourses(){
+      try {
+        const r = await fetch('/api/courses',{headers:headers()});
+        const j = await r.json();
+        if(j.ok && j.courses && j.courses.length){
+          $('wasedaCoursesBox').style.display = '';
+          const rows = j.courses.map(c => {
+            const dayPeriod = c.day ? (c.day + '曜' + (c.period || '') + '限') : 'オンデマンド等';
+            const room = c.room ? (' (' + c.room + ')') : '';
+            const term = c.term ? ('[' + c.term + '] ') : '';
+            return '<div style="padding:.2rem 0; border-bottom:1px dashed #f3f4f6">・' + term + '<strong>' + dayPeriod + '</strong> ' + escapeHtml(c.name) + escapeHtml(room) + '</div>';
+          }).join('');
+          $('wasedaCourses').innerHTML = rows;
+        } else {
+          $('wasedaCoursesBox').style.display = 'none';
+        }
+      } catch(e){}
+    }
+    async function syncWasedaCoursesToGoogle(){
+      $('wasedaSyncGoogleState').textContent = '同期中…';
+      try {
+        const r = await fetch('/api/google/sync-courses',{method:'POST',headers:headers(),
+          body:JSON.stringify({googleEmail:googleDefault()})});
+        const j = await r.json();
+        if(j.ok){
+          $('wasedaSyncGoogleState').textContent = '✓ ' + j.googleEmail + ' に ' + j.count + ' 件の授業予定を同期しました';
+          loadGoogleEvents();
+        } else {
+          $('wasedaSyncGoogleState').textContent = '✗ ' + (j.error||'同期失敗');
+        }
+      } catch(e){
+        $('wasedaSyncGoogleState').textContent = '✗ 通信エラー';
+      }
     }
     async function saveWaseda(){
       const wasedaUser = $('wasedaUser').value.trim(), wasedaPassword = $('wasedaPw').value;
@@ -1544,7 +1703,7 @@ function renderDashboard(tableRows) {
       const r = await fetch('/api/waseda',{method:'POST',headers:headers(),
         body:JSON.stringify({wasedaUser:'', wasedaPassword:''})});
       const j = await r.json();
-      if(j.ok){ $('wasedaUser').value=''; $('wasedaPw').value=''; $('wasedaState').textContent='✓ 解除しました'; }
+      if(j.ok){ $('wasedaUser').value=''; $('wasedaPw').value=''; $('wasedaState').textContent='✓ 解除しました'; loadWasedaCourses(); }
       else $('wasedaState').textContent='✗ '+(j.error||'解除失敗');
     }
     // 時間割の取り込み（サーバーでスクレイパを実行し、完了まで状況をポーリング表示）。
@@ -1575,7 +1734,7 @@ function renderDashboard(tableRows) {
           }
           $('wasedaSyncBar').style.display='none';
           $('wasedaSyncMsg').textContent = (j.state==='done' ? '✓ ' : (j.state==='error' ? '✗ ' : '')) + (j.message||'');
-          if(j.state==='done') loadTasks();
+          if(j.state==='done'){ loadTasks(); loadWasedaCourses(); }
         }
       } catch(e){ $('wasedaSyncMsg').textContent='状況の取得に失敗しました'; }
       $('wasedaSyncBtn').disabled = false;
