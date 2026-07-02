@@ -117,8 +117,11 @@ function parseEvents(ics) {
 
 // 1ユーザー分を同期。取り込んだ件数を返す。
 async function syncUser(email, url) {
+  console.log(`[Moodle Sync] 取得開始: ${email} (URL: ${url})`);
   const ics = await fetchIcs(url);
   const events = parseEvents(ics);
+  console.log(`[Moodle Sync] パース完了: 全 ${events.length} 件のイベントを取得しました。`);
+  
   let imported = 0;
   for (const ev of events) {
     // 「提出」「due」「課題」を含むものは課題、それ以外は予定として登録。
@@ -127,6 +130,9 @@ async function syncUser(email, url) {
     const content = ev.course ? `[${ev.course}] ${ev.summary}` : ev.summary;
     const details = [ev.course ? `授業: ${ev.course}` : "", ev.description]
       .filter((s) => s).join(" / ") || "Moodle";
+      
+    console.log(`[Moodle Sync] ${isKadai ? '課題' : '予定'}を検知 - 科目: ${ev.course || '(科目情報なし)'}, タイトル: ${ev.summary}, 期限: ${ev.at}`);
+
     await db.addTask(email, {
       type: isKadai ? "kadai" : "yotei",
       content,
@@ -136,6 +142,7 @@ async function syncUser(email, url) {
     });
     imported++;
   }
+  console.log(`[Moodle Sync] 取得・登録完了: ${imported} 件を DB に反映しました。`);
   return imported;
 }
 
