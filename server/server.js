@@ -47,6 +47,7 @@ const PORT = process.env.PORT || 3000;
 const ACCOUNTS_FILE = path.join(__dirname, "accounts.json");
 // 日次サマリの送信時刻（サーバーのローカル時刻）。"HH:MM" 形式。既定 21:00。
 const SUMMARY_TIME = process.env.DAILY_SUMMARY_TIME || "21:00";
+const SUMMARY_PREGENERATE_LEAD_MIN = Number(process.env.DAILY_SUMMARY_PREGENERATE_LEAD_MIN || 15);
 
 const app = express();
 
@@ -1373,19 +1374,83 @@ app.post("/api/send-summary", async (req, res) => {
   }
 });
 
+function parseHHMM(hhmm) {
+  const m = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(min) || h < 0 || h > 23 || min < 0 || min > 59) {
+    return null;
+  }
+  return { h, m: min };
+}
+
 // "HH:MM" を解釈し、次にその時刻になるまでのミリ秒を返す。
 function msUntilNext(hhmm) {
-  const [h, m] = hhmm.split(":").map((s) => Number(s));
+  const parsed = parseHHMM(hhmm);
+  if (!parsed) return null;
   const now = new Date();
   const next = new Date(now);
-  next.setHours(h, m, 0, 0);
+  next.setHours(parsed.h, parsed.m, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1); // 今日の時刻を過ぎていれば翌日
   return next - now;
 }
 
+let summaryPregenerationTimer = null;
+let lastPregeneratedForSendAt = 0;
+
+function nextSummarySendAt() {
+  const parsed = parseHHMM(SUMMARY_TIME);
+  if (!parsed) return null;
+  const now = new Date();
+  const sendAt = new Date(now);
+  sendAt.setHours(parsed.h, parsed.m, 0, 0);
+  if (sendAt <= now) sendAt.setDate(sendAt.getDate() + 1);
+  return sendAt;
+}
+
+// 毎日 SUMMARY_TIME の少し前に、LINE 送信や画面表示に備えて「今日の要約」を作り直す。
+function scheduleDailySummaryPregeneration() {
+  if (!gemini.isConfigured()) return;
+  if (!parseHHMM(SUMMARY_TIME)) {
+    console.error(`DAILY_SUMMARY_TIME の形式が不正です: ${SUMMARY_TIME}（HH:MM で指定）`);
+    return;
+  }
+  const leadMin = Number.isFinite(SUMMARY_PREGENERATE_LEAD_MIN) ? SUMMARY_PREGENERATE_LEAD_MIN : 15;
+  if (leadMin < 0) return;
+
+  const now = new Date();
+  let sendAt = nextSummarySendAt();
+  let generateAt = new Date(sendAt.getTime() - leadMin * 60_000);
+  if (generateAt <= now) {
+    if (lastPregeneratedForSendAt !== sendAt.getTime()) {
+      generateAt = now;
+    } else {
+      sendAt = new Date(sendAt.getTime() + 24 * 3600_000);
+      generateAt = new Date(sendAt.getTime() - leadMin * 60_000);
+    }
+  }
+
+  if (summaryPregenerationTimer) clearTimeout(summaryPregenerationTimer);
+  const delay = Math.max(0, generateAt - now);
+  console.log(
+    `次回の日次要約事前生成: ${generateAt.toLocaleString("ja-JP")} ` +
+      `（送信予定 ${sendAt.toLocaleString("ja-JP")} の ${leadMin}分前）`
+  );
+  summaryPregenerationTimer = setTimeout(async () => {
+    lastPregeneratedForSendAt = sendAt.getTime();
+    try {
+      await reminders.refreshTodaySummaries();
+    } catch (e) {
+      console.error("日次要約の事前生成に失敗:", e.message);
+    }
+    scheduleDailySummaryPregeneration();
+  }, delay);
+}
+
 // 毎日 SUMMARY_TIME に日次サマリを送る。setTimeout を都度貼り直して回す。
 function scheduleDailySummary() {
-  if (!/^\d{1,2}:\d{2}$/.test(SUMMARY_TIME)) {
+  if (!parseHHMM(SUMMARY_TIME)) {
     console.error(`DAILY_SUMMARY_TIME の形式が不正です: ${SUMMARY_TIME}（HH:MM で指定）`);
     return;
   }
@@ -2612,6 +2677,9 @@ async function main() {
     console.log(`accounts: ${ACCOUNTS_FILE}`);
     console.log(`DB: ${process.env.DB_NAME || "aihelper"}@${process.env.DB_HOST || "localhost"}`);
     console.log(`Gemini: ${gemini.isConfigured() ? gemini.MODEL : "未設定"} / LINE: ${line.isConfigured() ? "有効" : "未設定"}`);
+    if (gemini.isConfigured()) {
+      scheduleDailySummaryPregeneration();
+    }
     if (line.isConfigured()) {
       scheduleDailySummary();
     } else {

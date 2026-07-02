@@ -373,6 +373,17 @@ async function getTranscriptsForDay(email, day) {
   return rows;
 }
 
+async function listEmailsForDailySummary(day) {
+  const [rows] = await pool.query(
+    `SELECT DISTINCT email FROM tasks
+     UNION
+     SELECT DISTINCT email FROM transcripts
+     WHERE filename LIKE ? OR DATE(updated_at) = ?`,
+    [`${day}\\_%`, day]
+  );
+  return rows.map((r) => r.email);
+}
+
 // 質問文のキーワードに一致する過去の文字起こしを探し、一致箇所前後の抜粋を返す。
 // keywords は2文字以上の語の配列。返り値: [{ filename, snippet }]
 async function searchTranscriptSnippets(email, keywords, { limit = 5, snippetLen = 400 } = {}) {
@@ -1005,6 +1016,7 @@ module.exports = {
   getTranscript,
   getTranscriptForEmail,
   getTranscriptsForDay,
+  listEmailsForDailySummary,
   searchTranscriptSnippets,
   // chat
   addChatMessage,

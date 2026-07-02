@@ -59,6 +59,7 @@ npm start          # http://localhost:3000
 | `LINE_CHANNEL_ACCESS_TOKEN` | （空） | LINE Messaging API のチャネルアクセストークン。未設定なら LINE 送信はスキップ |
 | `REMINDER_INTERVAL_SEC` | `60` | 締切チェックの間隔（秒） |
 | `DAILY_SUMMARY_INTERVAL_MIN` | `300` | 「今日の要約」自動再生成の間隔（分）。`0` で無効 |
+| `DAILY_SUMMARY_PREGENERATE_LEAD_MIN` | `15` | `DAILY_SUMMARY_TIME` の何分前に「今日の要約」を事前生成するか |
 | `GOOGLE_CLIENT_ID` | （空） | Web からの Google カレンダー連携用 OAuth クライアント ID |
 | `GOOGLE_CLIENT_SECRET` | （空） | 同シークレット。両方未設定なら Web の Google 連携は無効 |
 | `GOOGLE_REDIRECT_URL` | リクエストから自動 | OAuth リダイレクト URI を固定したい場合に指定 |
@@ -173,6 +174,8 @@ curl -X POST http://localhost:3000/api/ask \
 ## 日次要約
 
 - `DAILY_SUMMARY_INTERVAL_MIN` ごと（既定は5時間ごと）に、アクティブな各アカウントの「今日」をまとめて再生成。
+- さらに `DAILY_SUMMARY_TIME` の `DAILY_SUMMARY_PREGENERATE_LEAD_MIN` 分前（既定15分前）にも、送信/表示直前の最終生成を行う。
+- 音声ジョブが完了した直後にも、そのユーザーの当日要約を再生成する。
 - ダッシュボードの「今すぐ生成し直す」や `POST /api/summary/:day/generate` で任意の日も生成可能。
 
 ## 動作確認 (curl)

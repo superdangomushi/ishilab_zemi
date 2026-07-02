@@ -95,7 +95,7 @@ async function refreshTodaySummaries() {
   const day = gemini.localDate();
   let emails = [];
   try {
-    emails = await db.listEmailsWithTasks();
+    emails = await db.listEmailsForDailySummary(day);
   } catch (e) {
     console.error("要約対象アカウントの取得に失敗:", e.message);
     return;

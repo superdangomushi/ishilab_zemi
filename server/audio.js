@@ -13,6 +13,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const db = require("./db");
 const gemini = require("./gemini");
+const reminders = require("./reminders");
 
 const STT_DIR = path.join(__dirname, "stt");
 
@@ -126,6 +127,13 @@ async function processJob(job) {
     }
 
     await db.finishAudioJob(job.id, { status: "done", transcriptId });
+    try {
+      const day = gemini.localDate();
+      const daily = await reminders.generateDailySummary(job.email, day);
+      if (daily) console.log(`音声ジョブ #${job.id} 完了後に日次要約を更新: ${job.email} ${day}`);
+    } catch (e) {
+      console.error(`音声ジョブ #${job.id} 完了後の日次要約生成に失敗:`, e.message);
+    }
     fs.unlink(job.stored_path, () => {}); // 処理済み音声は保持しない
     console.log(`音声文字起こし完了: #${job.id} -> ${txtName} (${text.length} 文字)`);
   } catch (e) {
