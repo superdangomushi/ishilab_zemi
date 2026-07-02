@@ -171,6 +171,20 @@ async function ensureSchema() {
   // Waseda アカウント（時間割スクレイパ用）。パスワードは AES-256-GCM で暗号化して保存。
   await addColumnIfMissing("users", "waseda_user", "VARCHAR(255) NULL");
   await addColumnIfMissing("users", "waseda_password_enc", "VARCHAR(1024) NULL");
+
+  // スマホから同期されたカレンダー予定
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      email        VARCHAR(255) NOT NULL,
+      title        VARCHAR(512) NOT NULL,
+      start_at     VARCHAR(64)  NOT NULL,
+      start_millis BIGINT       NOT NULL,
+      location     VARCHAR(512) NULL,
+      updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_cal_email (email)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
 }
 
 async function addColumnIfMissing(table, column, definition) {
@@ -695,6 +709,41 @@ async function removeGoogleAccount(email, googleEmail) {
   );
 }
 
+async function replaceCalendarEvents(email, events) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query("DELETE FROM calendar_events WHERE email = ?", [email]);
+    if (events && events.length) {
+      const values = events.map(e => [
+        email,
+        e.title || "",
+        e.whenText || e.start_at || "",
+        e.startMillis || 0,
+        e.location || null
+      ]);
+      await connection.query(
+        "INSERT INTO calendar_events (email, title, start_at, start_millis, location) VALUES ?",
+        [values]
+      );
+    }
+    await connection.commit();
+  } catch (e) {
+    await connection.rollback();
+    throw e;
+  } finally {
+    connection.release();
+  }
+}
+
+async function listCalendarEvents(email) {
+  const [rows] = await pool.query(
+    "SELECT title, start_at as whenText, start_millis as startMillis, location FROM calendar_events WHERE email = ? ORDER BY start_millis ASC",
+    [email]
+  );
+  return rows;
+}
+
 // Moodle URL を登録済みのユーザー一覧（定期同期用）。
 async function listUsersWithMoodle() {
   const [rows] = await pool.query(
@@ -706,6 +755,8 @@ async function listUsersWithMoodle() {
 module.exports = {
   pool,
   ensureSchema,
+  replaceCalendarEvents,
+  listCalendarEvents,
   // users
   createUser,
   getUserByEmail,

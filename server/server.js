@@ -312,6 +312,20 @@ app.post("/api/google-link", async (req, res) => {
   }
 });
 
+// スマホのローカルカレンダーから取得した予定を同期（保存）する。
+app.post("/api/calendar/sync", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const events = Array.isArray(req.body?.events) ? req.body.events : [];
+  try {
+    await db.replaceCalendarEvents(account.email, events);
+    res.json({ ok: true, count: events.length });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+
 // ---- Google 連携（Web OAuth: PC ブラウザから複数アカウントを連携） ----
 
 // OAuth の state → どのユーザーの連携要求か（CSRF 対策。10分で失効）。
@@ -401,6 +415,28 @@ app.get("/api/google/events", async (req, res) => {
         errors.push(`${r.google_email}: ${e.message}`);
       }
     }
+
+    // スマホから同期されたカレンダー予定もマージする
+    try {
+      const localEvents = await db.listCalendarEvents(account.email);
+      for (const ev of localEvents) {
+        const exists = events.some(
+          (x) => x.title === ev.title && Math.abs((x.startMillis || 0) - ev.startMillis) < 60000
+        );
+        if (!exists) {
+          events.push({
+            title: ev.title,
+            whenText: ev.whenText,
+            startMillis: ev.startMillis,
+            location: ev.location || "",
+            accountEmail: "スマホ同期",
+          });
+        }
+      }
+    } catch (le) {
+      console.error("ローカル同期カレンダー取得失敗:", le.message);
+    }
+
     events.sort((a, b) => a.startMillis - b.startMillis);
     res.json({ ok: true, events, error: errors.join(" / ") || undefined });
   } catch (e) {
@@ -826,6 +862,23 @@ app.post("/api/ask", async (req, res) => {
       }
     } catch (e) {
       console.error("Askカレンダーアカウントリスト取得失敗:", e.message);
+    }
+
+    // スマホから同期されたカレンダー予定もマージする
+    try {
+      const localEvents = await db.listCalendarEvents(account.email);
+      for (const ev of localEvents) {
+        const exists = calendar.some(x => x.title === ev.title && Math.abs((x.startMillis || 0) - ev.startMillis) < 60000);
+        if (!exists) {
+          calendar.push({
+            title: ev.title,
+            whenText: ev.whenText,
+            startMillis: ev.startMillis,
+          });
+        }
+      }
+    } catch (le) {
+      console.error("Askローカル同期カレンダー取得失敗:", le.message);
     }
 
     // 授業の質問にも答えられるよう、資料要約と質問に関連する文字起こし抜粋も渡す。
@@ -1329,6 +1382,10 @@ function renderDashboard(tableRows) {
 
       <section class="card panel" data-panel="tasks">
         <h2>課題・予定</h2>
+        <div id="tasksCalendarEvents" style="margin-bottom:1rem; display:none">
+          <h3 style="font-size:.9rem; margin:.4rem 0 .2rem">Google カレンダーの直近予定</h3>
+          <div id="tasksCalendarEventsList" style="font-size:.85rem; padding:.6rem; background:#f8fafc; border-radius:8px; line-height:1.5"></div>
+        </div>
         <div style="display:grid; gap:.5rem; margin-bottom:.7rem">
           <input id="taskSearch" placeholder="キーワード検索（内容・詳細）" oninput="renderTasks()">
           <div class="row">
@@ -1582,20 +1639,34 @@ function renderDashboard(tableRows) {
       } catch(e){}
     }
     async function loadGoogleEvents(){
-      if(!googleAccounts.length){ $('googleEvents').innerHTML=''; return; }
+      if(!googleAccounts.length){
+        $('googleEvents').innerHTML='';
+        if($('tasksCalendarEvents')) $('tasksCalendarEvents').style.display='none';
+        return;
+      }
       try {
         const r = await fetch('/api/google/events',{headers:headers()});
         const j = await r.json();
-        if(!j.ok){ $('googleEvents').innerHTML = '<p class="muted">'+escapeHtml(j.error||'予定取得失敗')+'</p>'; return; }
+        if(!j.ok){
+          const errMsg = '<p class="muted">'+escapeHtml(j.error||'予定取得失敗')+'</p>';
+          $('googleEvents').innerHTML = errMsg;
+          return;
+        }
         const evs = (j.events||[]).slice(0,8);
-        $('googleEvents').innerHTML =
-          '<p class="muted" style="margin:.4rem 0 .2rem">直近の予定</p>' +
-          (evs.length ? evs.map(ev =>
-            '<div>・'+escapeHtml(ev.whenText)+'　'+escapeHtml(ev.title)+
-            (googleAccounts.length>1 ? ' <span class="muted">('+escapeHtml((ev.accountEmail||'').split('@')[0])+')</span>' : '')+
-            '</div>').join('')
-          : '<p class="muted">直近の予定はありません。</p>') +
-          (j.error ? '<p class="muted">'+escapeHtml(j.error)+'</p>' : '');
+        const html = evs.length ? evs.map(ev =>
+          '<div>・'+escapeHtml(ev.whenText)+'　'+escapeHtml(ev.title)+
+          (googleAccounts.length>1 ? ' <span class="muted">('+escapeHtml((ev.accountEmail||'').split('@')[0])+')</span>' : '')+
+          '</div>').join('')
+        : '<p class="muted">直近の予定はありません。</p>';
+        $('googleEvents').innerHTML = '<p class="muted" style="margin:.4rem 0 .2rem">直近の予定</p>' + html + (j.error ? '<p class="muted">'+escapeHtml(j.error)+'</p>' : '');
+        if($('tasksCalendarEvents')){
+          if(evs.length){
+            $('tasksCalendarEvents').style.display = '';
+            $('tasksCalendarEventsList').innerHTML = html;
+          } else {
+            $('tasksCalendarEvents').style.display = 'none';
+          }
+        }
       } catch(e){}
     }
     async function connectGoogle(){
