@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 通知(Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- リマインドの全画面アラート＋バイブ -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- モデルの初回ダウンロード -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -34,6 +37,15 @@
             </intent-filter>
         </activity>
 
+        <!-- 締切リマインドの全画面アラート（ロック中でも表示・点灯） -->
+        <activity
+            android:name=".ReminderAlertActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".service.AudioCaptureService"
             android:exported="false"
@@ -46,6 +58,11 @@
         <!-- 予定・課題の締切が近いときの定期通知（録音していないときも動く） -->
         <receiver
             android:name=".service.ReminderReceiver"
+            android:exported="false" />
+
+        <!-- リマインド通知の「了解」ボタン -->
+        <receiver
+            android:name=".net.ReminderAckReceiver"
             android:exported="false" />
 
         <provider
