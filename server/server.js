@@ -500,6 +500,7 @@ app.post("/api/google/sync-courses", async (req, res) => {
     const untilStr = isSpring ? `${year}0731T235959Z` : `${year + (month <= 3 ? 0 : 1)}0131T235959Z`;
 
     let successCount = 0;
+    let skippedCount = 0;
     for (const c of courses) {
       const dayNum = daysMap[c.day];
       if (dayNum === undefined) continue; // 曜日が「無」等はカレンダー登録不可のためスキップ
@@ -541,11 +542,20 @@ app.post("/api/google/sync-courses", async (req, res) => {
       const location = c.room || "";
       const recurrence = [`RRULE:FREQ=WEEKLY;UNTIL=${untilStr}`];
 
-      await google.insertRecurringEvent(token, summary, location, startIso, endIso, recurrence);
+      // 科目を識別するキーをイベントに埋め込み、再同期しても二重登録しない。
+      const courseKey = crypto.createHash("sha1")
+        .update([untilStr, c.term || "", c.day || "", c.period || "", c.start_time || "", c.end_time || "", c.name].join("|"))
+        .digest("hex");
+      const existing = await google.findEventsByPrivateKey(token, "aihelperCourse", courseKey);
+      if (existing.length) { skippedCount++; continue; }
+
+      await google.insertRecurringEvent(
+        token, summary, location, startIso, endIso, recurrence, { aihelperCourse: courseKey }
+      );
       successCount++;
     }
 
-    res.json({ ok: true, count: successCount, googleEmail: row.google_email });
+    res.json({ ok: true, count: successCount, skipped: skippedCount, googleEmail: row.google_email });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -651,8 +661,8 @@ app.get("/api/waseda/sync/status", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   const job = wasedaSyncJobs.get(account.email);
-  if (!job) return res.json({ ok: true, state: "idle", message: "" });
-  res.json({ ok: true, state: job.state, message: job.message });
+  if (!job) return res.json({ ok: true, state: "idle", message: "", log: "" });
+  res.json({ ok: true, state: job.state, message: job.message, log: job.log || "" });
 });
 
 // スクレイパを子プロセスで実行する。資格情報はスクレイパ自身が /api/waseda/credentials から取る。
@@ -672,7 +682,7 @@ function runWasedaScraper(account, job) {
     },
   });
   const append = (chunk) => {
-    job.log = (job.log + chunk.toString()).slice(-4000);
+    job.log = (job.log + chunk.toString()).slice(-20000);
     // スクレイパの進捗表示（「ログイン中…」等）をそのままステータスに反映する。
     const lines = job.log.trim().split("\n").filter((l) => l.trim());
     if (lines.length) job.message = lines[lines.length - 1].slice(0, 200);
@@ -908,7 +918,27 @@ app.post("/api/ask", async (req, res) => {
         }
       }
     }
-    res.json({ ok: true, reply: result.reply, applied });
+
+    // Gemini が reply では「登録した」と言いつつ actions を返し忘れることがある。
+    // その場合は依頼内容を専用プロンプトで抽出し直して登録する（保険）。
+    let reply = result.reply;
+    const claimsAdd = /(登録|追加)(し|いたし)ました|入れ(て|と)おきました|入れました/.test(reply);
+    if (claimsAdd && !applied.some((x) => x.op === "add_task")) {
+      try {
+        const fallback = await gemini.extractTaskRequests(question);
+        for (const t of fallback) {
+          await db.addTask(account.email, t);
+          applied.push({ op: "add_task", type: t.type, content: t.content, deadline_at: t.deadline_at });
+        }
+        if (!fallback.length) {
+          reply += "\n（※すみません、今回は登録できていません。「〇月〇日に△△を予定に入れて」の形でもう一度お願いします）";
+        }
+      } catch (e) {
+        console.error("ask の登録フォールバックに失敗:", e.message);
+      }
+    }
+
+    res.json({ ok: true, reply, applied });
   } catch (e) {
     console.error("ask に失敗:", e.message);
     res.status(500).json({ ok: false, error: e.message });
@@ -1531,6 +1561,12 @@ function renderDashboard(tableRows) {
                  animation: slide 1.2s ease-in-out infinite alternate"></div>
           </div>
           <p id="wasedaSyncMsg" class="muted" style="margin:.4rem 0 0"></p>
+          <details style="margin-top:.4rem">
+            <summary class="muted" style="cursor:pointer; font-size:.85rem">実行ログを表示</summary>
+            <pre id="wasedaSyncLog" style="max-height:220px; overflow:auto; background:#f9fafb;
+                 border:1px solid #e5e7eb; border-radius:6px; padding:.5rem; font-size:.72rem;
+                 white-space:pre-wrap; word-break:break-all; margin:.3rem 0 0"></pre>
+          </details>
         </div>
         <div id="wasedaCoursesBox" style="display:none; margin-top:.8rem">
           <h4 style="font-size:.9rem; margin:.4rem 0 .2rem">取り込んだ時間割</h4>
@@ -1860,7 +1896,8 @@ function renderDashboard(tableRows) {
           body:JSON.stringify({googleEmail:googleDefault()})});
         const j = await r.json();
         if(j.ok){
-          $('wasedaSyncGoogleState').textContent = '✓ ' + j.googleEmail + ' に ' + j.count + ' 件の授業予定を同期しました';
+          $('wasedaSyncGoogleState').textContent = '✓ ' + j.googleEmail + ' に ' + j.count + ' 件の授業予定を同期しました' +
+            (j.skipped ? '（' + j.skipped + ' 件は登録済みのためスキップ）' : '');
           loadGoogleEvents();
         } else {
           $('wasedaSyncGoogleState').textContent = '✗ ' + (j.error||'同期失敗');
@@ -1900,12 +1937,20 @@ function renderDashboard(tableRows) {
       $('wasedaSyncMsg').textContent = msg;
       $('wasedaSyncBtn').disabled = true;
     }
+    // スクレイパの実行ログを表示欄に反映する（開いていれば末尾へ自動スクロール）。
+    function updateWasedaLog(log){
+      const el = $('wasedaSyncLog');
+      if(!el || el.textContent === (log||'')) return;
+      el.textContent = log || '';
+      el.scrollTop = el.scrollHeight;
+    }
     async function pollWasedaSync(){
       clearTimeout(wasedaPollTimer);
       try {
         const r = await fetch('/api/waseda/sync/status',{headers:headers()});
         const j = await r.json();
         if(j.ok){
+          updateWasedaLog(j.log);
           if(j.state==='running'){
             $('wasedaSyncMsg').textContent = '取り込み中: '+(j.message||'…');
             wasedaPollTimer = setTimeout(pollWasedaSync, 3000);
@@ -1913,7 +1958,11 @@ function renderDashboard(tableRows) {
           }
           $('wasedaSyncBar').style.display='none';
           $('wasedaSyncMsg').textContent = (j.state==='done' ? '✓ ' : (j.state==='error' ? '✗ ' : '')) + (j.message||'');
-          if(j.state==='done'){ loadTasks(); loadWasedaCourses(); }
+          if(j.state==='done'){
+            loadTasks(); loadWasedaCourses();
+            // Google 連携済みなら、取り込んだ時間割をそのままカレンダーへ反映する。
+            if(googleAccounts.length) syncWasedaCoursesToGoogle();
+          }
         }
       } catch(e){ $('wasedaSyncMsg').textContent='状況の取得に失敗しました'; }
       $('wasedaSyncBtn').disabled = false;
@@ -1999,7 +2048,15 @@ function renderDashboard(tableRows) {
         const r = await fetch('/api/ask',{method:'POST',headers:headers(),body:JSON.stringify({question:q})});
         const j = await r.json();
         bubble(j.ok ? j.reply : ('エラー: '+(j.error||'')), 'bot');
-        if(j.ok){ loadTasks(); }
+        if(j.ok){
+          // 実際に登録・完了された内容を明示する（言っただけで登録されていない事故の可視化）。
+          if(Array.isArray(j.applied) && j.applied.length){
+            bubble(j.applied.map(a => a.op==='add_task'
+              ? '✓ 登録: '+(a.type==='yotei'?'予定':'課題')+'「'+a.content+'」'+(a.deadline_at?'（期限 '+String(a.deadline_at).slice(0,16).replace('T',' ')+'）':'（期限未設定）')
+              : '✓ 完了: 「'+(a.content||'')+'」').join('\n'), 'bot');
+          }
+          loadTasks();
+        }
       }catch(e){ bubble('通信エラー','bot'); }
     }
 

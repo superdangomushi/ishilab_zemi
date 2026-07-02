@@ -1,1 +1,8 @@
-faster-whisper
+# faster-whisper 本体。バッチ推論 (BatchedInferencePipeline) を使うため 1.1 以降。
+faster-whisper>=1.1.0
+# RTX 50xx (Blackwell, sm_120) は CTranslate2 4.6 以降が必要。
+ctranslate2>=4.6.0
+# GPU 実行用の cuBLAS / cuDNN9。CUDA Toolkit のシステム導入は不要（ドライバのみ必要）。
+# CPU マシンに入れても実行時には使われない（ディスクを ~1GB 使うだけ）。
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9

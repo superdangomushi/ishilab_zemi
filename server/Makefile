@@ -38,7 +38,7 @@ MYSQL_ADMIN ?= sudo mysql --defaults-file=/etc/mysql/debian.cnf
 MYSQL_APP := mysql -h $(DB_HOST) -P $(DB_PORT) -u $(DB_USER) -p$(DB_PASSWORD)
 
 .DEFAULT_GOAL := help
-.PHONY: help install system-deps db db-user db-schema npm-deps python-deps stt-deps run clean
+.PHONY: help install system-deps db db-user db-schema npm-deps python-deps stt-deps gpu-driver gpu-check run clean
 
 help: ## 使い方を表示
 	@echo "aihelper サーバー Makefile"
@@ -49,7 +49,9 @@ help: ## 使い方を表示
 	@echo "  make db            DB($(DB_NAME))・ユーザー($(DB_USER))作成 + schema 適用 (要 sudo)"
 	@echo "  make npm-deps      npm 依存関係のみインストール"
 	@echo "  make python-deps   時間割スクレイパの Python 依存を scraper/.venv に導入 (要 sudo)"
-	@echo "  make stt-deps      ローカル文字起こし (faster-whisper) を stt/.venv に導入 (要 sudo)"
+	@echo "  make stt-deps      ローカル文字起こし (faster-whisper, GPU対応) を stt/.venv に導入 (要 sudo)"
+	@echo "  make gpu-driver    NVIDIA ドライバを導入 (RTX 50xx 対応。導入後に再起動が必要)"
+	@echo "  make gpu-check     GPU と CUDA が文字起こしから使える状態か確認"
 	@echo "  make clean         node_modules を削除"
 
 # ワンショット・セットアップ。前提ターゲットは記載順に実行される。
@@ -104,12 +106,38 @@ python-deps: ## 時間割スクレイパの Python 依存 (bs4/selenium 等) を
 	sudo apt-get install -y chromium-browser chromium-chromedriver
 
 # 文字起こしは Gemini でなくローカルの Whisper で行う（トークン節約）。
-# 初回実行時にモデル（既定 large-v3-turbo 約1.6GB）を自動ダウンロードする。
-stt-deps: ## ローカル文字起こし (faster-whisper) を stt/.venv に導入 (要 sudo)
-	@echo ">> stt/.venv に faster-whisper を導入します"
+# GPU (NVIDIA) があれば自動で使い、精度最優先の large-v3 + float16 で動く。
+# CUDA Toolkit のシステム導入は不要（cuBLAS/cuDNN は pip で venv 内に入る）。
+# NVIDIA ドライバが未導入なら先に `make gpu-driver` → 再起動。
+# 初回実行時にモデル（large-v3 約3GB）を自動ダウンロードする。
+stt-deps: ## ローカル文字起こし (faster-whisper, GPU対応) を stt/.venv に導入 (要 sudo)
+	@echo ">> stt/.venv に faster-whisper (GPU対応) を導入します"
 	sudo apt-get install -y python3-venv ffmpeg
 	python3 -m venv stt/.venv
+	stt/.venv/bin/pip install --upgrade pip
 	stt/.venv/bin/pip install -r stt/requirements.txt
+	@$(MAKE) --no-print-directory gpu-check
+
+# RTX 50xx (Blackwell) はドライバ 570 以降が必要。ubuntu-drivers が適切な版を選ぶ。
+gpu-driver: ## NVIDIA ドライバを導入 (要 sudo。導入後に再起動すること)
+	@echo ">> NVIDIA ドライバを導入します（完了後に再起動してください）"
+	sudo apt-get update
+	sudo apt-get install -y ubuntu-drivers-common
+	sudo ubuntu-drivers install
+	@echo ">> 再起動後、'make gpu-check' で認識を確認してください"
+
+gpu-check: ## GPU が文字起こしから使える状態か確認
+	@if command -v nvidia-smi >/dev/null 2>&1; then \
+	  nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; \
+	else \
+	  echo "⚠ nvidia-smi が見つかりません。GPU を使うには 'make gpu-driver' → 再起動。"; \
+	  echo "  （GPU なしでも CPU で文字起こしは動きます）"; \
+	fi
+	@if [ -x stt/.venv/bin/python3 ]; then \
+	  stt/.venv/bin/python3 -c "import ctranslate2; n = ctranslate2.get_cuda_device_count(); print('✅ CUDA デバイス ' + str(n) + ' 台を faster-whisper から利用できます' if n else '⚠ faster-whisper から CUDA が見えません（ドライバ導入後は再起動が必要。CPU では動きます）')"; \
+	else \
+	  echo "（stt/.venv 未作成。'make stt-deps' 後に再確認してください）"; \
+	fi
 
 run: ## サーバーを起動 (DB 認証情報は上の変数から環境変数で渡る)
 	npm start

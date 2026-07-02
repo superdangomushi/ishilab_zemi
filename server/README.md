@@ -62,8 +62,14 @@ npm start          # http://localhost:3000
 | `GOOGLE_CLIENT_ID` | （空） | Web からの Google カレンダー連携用 OAuth クライアント ID |
 | `GOOGLE_CLIENT_SECRET` | （空） | 同シークレット。両方未設定なら Web の Google 連携は無効 |
 | `GOOGLE_REDIRECT_URL` | リクエストから自動 | OAuth リダイレクト URI を固定したい場合に指定 |
-| `WHISPER_MODEL` | `large-v3-turbo` | ローカル文字起こし (faster-whisper) のモデル名 |
-| `WHISPER_COMPUTE` | `int8` | faster-whisper の compute_type（CPU なら int8 推奨） |
+| `WHISPER_DEVICE` | 自動判定 | ローカル文字起こしの実行先（`cuda` / `cpu`。通常は指定不要） |
+| `WHISPER_MODEL` | GPU: `large-v3` / CPU: `large-v3-turbo` | faster-whisper のモデル名 |
+| `WHISPER_COMPUTE` | GPU: `float16` / CPU: `int8` | faster-whisper の compute_type |
+| `WHISPER_BATCH` | GPU: `16` / CPU: `0`(無効) | バッチ推論のサイズ。大きいほど速いが VRAM を使う |
+| `WHISPER_CPU_THREADS` | 全コア | CPU 実行時のスレッド数 |
+
+文字起こしは GPU (NVIDIA) があれば自動で使う。GPU マシンでは `make gpu-driver`（初回のみ・要再起動）
+→ `make stt-deps` → `make gpu-check` の順にセットアップする。CUDA Toolkit の手動導入は不要。
 
 Web の Google 連携を有効にするには、Google Cloud Console で「OAuth クライアント ID（ウェブアプリケーション）」を作成し、
 承認済みリダイレクト URI に `https://<ドメイン>/api/google/callback` を登録して、上記 2 変数を `.env` などで渡す。

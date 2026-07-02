@@ -414,6 +414,8 @@ async function ask(question, ctx = {}) {
     "- 操作が不要なら actions は op='none' 1件のみ、または空配列。",
     "- reply には、依頼を実行したことや結果が利用者に伝わる自然な一言を必ず入れる。",
     "  ※実際の登録はシステム側が actions を見て行うので、reply では『登録しておきました』のように話す。",
+    "- 【重要】actions に入れない限り実際には何も登録されない。登録・完了の依頼には必ず対応する",
+    "  actions を入れること。逆に actions に入れていないのに reply で『登録した』と言ってはいけない。",
   ].join("\n");
 
   const parsed = await callJson(prompt, ASK_SCHEMA, { temperature: 0.4 });
@@ -432,6 +434,42 @@ async function ask(question, ctx = {}) {
       };
     });
   return { reply: String(parsed.reply ?? "").trim(), actions };
+}
+
+// 発話から「登録すべき課題・予定」だけを抽出する。
+// ask が reply で『登録した』と言いつつ actions を返し忘れたときの保険として使う。
+const TASK_REQUEST_SCHEMA = {
+  type: "object",
+  properties: {
+    tasks: { type: "array", items: ITEM_SCHEMA },
+  },
+  required: ["tasks"],
+};
+
+async function extractTaskRequests(question, today = localDate()) {
+  const prompt = [
+    "次の発話は秘書アプリ利用者の依頼です。登録すべき課題・予定があればすべて抽出してください。",
+    `本日は ${today} です。「明日」「来週の金曜」等の相対表現はこの日付基準で YYYY-MM-DD`,
+    "（時刻があれば YYYY-MM-DD HH:MM）へ変換してください。",
+    "type は課題=kadai / 予定=yotei。content は短い名前。deadline が不明なら空文字。",
+    "登録の依頼でなければ tasks は空配列にすること。",
+    "",
+    "【発話】",
+    question,
+  ].join("\n");
+  const parsed = await callJson(prompt, TASK_REQUEST_SCHEMA, { temperature: 0.1 });
+  return (Array.isArray(parsed.tasks) ? parsed.tasks : [])
+    .map((t) => {
+      const norm = normalizeDeadline(String(t.deadline ?? "").trim());
+      return {
+        type: t.type === "yotei" ? "yotei" : "kadai",
+        content: String(t.content ?? "").trim(),
+        details: String(t.details ?? "").trim(),
+        deadline_at: norm.at,
+        date_only: norm.dateOnly,
+      };
+    })
+    .filter((t) => t.content);
 }
 
 // =====================================================================
@@ -461,6 +499,6 @@ function localDate(date = new Date()) {
 }
 
 module.exports = {
-  analyze, summarizeDay, ask, summarizeDocument, transcribeAudio,
+  analyze, summarizeDay, ask, extractTaskRequests, summarizeDocument, transcribeAudio,
   isConfigured, localDate, MODEL,
 };

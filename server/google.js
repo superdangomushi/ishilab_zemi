@@ -149,7 +149,7 @@ function parseMillis(s) {
   return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)).getTime();
 }
 
-async function insertRecurringEvent(accessToken, summary, location, startIso, endIso, recurrenceRules) {
+async function insertRecurringEvent(accessToken, summary, location, startIso, endIso, recurrenceRules, privateProps) {
   const body = {
     summary,
     location,
@@ -163,6 +163,8 @@ async function insertRecurringEvent(accessToken, summary, location, startIso, en
     },
     recurrence: recurrenceRules,
   };
+  // 呼び出し側が付けた識別キー（再同期時の重複登録防止に使う）。
+  if (privateProps) body.extendedProperties = { private: privateProps };
   const res = await fetch(API, {
     method: "POST",
     headers: {
@@ -176,6 +178,21 @@ async function insertRecurringEvent(accessToken, summary, location, startIso, en
   if (!res.ok) throw new Error(j?.error?.message || `カレンダー繰り返し登録エラー (${res.status})`);
 }
 
+/** extendedProperties.private のキーで登録済みイベントを探す（重複登録の判定用）。 */
+async function findEventsByPrivateKey(accessToken, key, value) {
+  const p = new URLSearchParams({
+    privateExtendedProperty: `${key}=${value}`,
+    maxResults: "1",
+    showDeleted: "false",
+  });
+  const res = await fetch(`${API}?${p}`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j?.error?.message || `カレンダー検索エラー (${res.status})`);
+  return j.items || [];
+}
+
 module.exports = {
   SCOPE,
   isConfigured,
@@ -185,4 +202,5 @@ module.exports = {
   listUpcomingEvents,
   insertDeadline,
   insertRecurringEvent,
+  findEventsByPrivateKey,
 };
