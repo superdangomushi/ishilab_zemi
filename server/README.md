@@ -123,7 +123,10 @@ npm start
 | --- | --- | --- |
 | POST | `/api/login` | アカウント＋トークンの照合（LINE 連携状況も返す） |
 | POST | `/api/upload` | 文字起こし受信 → 保存 → Gemini で課題/予定/要約を抽出 |
+| GET | `/api/transcripts` | ログイン中ユーザーの文字起こし一覧 |
+| GET | `/api/transcripts/:id` | ログイン中ユーザーの文字起こし本文 |
 | POST | `/api/ask` | 秘書チャット。回答＋依頼（予定追加・完了化）の実行 |
+| GET | `/api/chat/history` | 秘書チャット履歴 |
 | GET | `/api/tasks` | 課題・予定の一覧（`?done=1` で完了も含む） |
 | POST | `/api/tasks` | タスクを手動追加（`type, content, details, deadline`） |
 | POST | `/api/tasks/:id/done` | 完了/未完了の切替（`{status}`） |

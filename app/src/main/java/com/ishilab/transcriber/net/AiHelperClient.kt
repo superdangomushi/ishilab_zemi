@@ -36,6 +36,32 @@ class AiHelperClient {
         val done: Boolean,
     )
 
+    /** サーバーに保存された文字起こし一覧の1件。 */
+    data class ServerTranscript(
+        val id: Long,
+        val filename: String,
+        val chars: Int,
+        val updatedAt: String,
+        val analyzed: Boolean,
+    )
+
+    /** サーバーに保存された文字起こし本文。 */
+    data class ServerTranscriptDetail(
+        val id: Long,
+        val filename: String,
+        val content: String,
+        val summary: String,
+        val updatedAt: String,
+        val analyzed: Boolean,
+    )
+
+    /** サーバーに保存された秘書チャット履歴。role は "user" / "assistant"。 */
+    data class ChatHistoryMessage(
+        val role: String,
+        val content: String,
+        val createdAt: String,
+    )
+
     /** 課題・予定の一覧を取得する。includeDone=true で完了済みも含める。 */
     fun fetchTasks(
         baseUrl: String, email: String, token: String, includeDone: Boolean,
@@ -66,6 +92,70 @@ class AiHelperClient {
                         done = o.optString("status") == "done",
                     )
                 }
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
+    /** サーバーに保存済みの文字起こし一覧を取得する。 */
+    fun fetchServerTranscripts(
+        baseUrl: String, email: String, token: String, limit: Int = 100,
+    ): kotlin.Result<List<ServerTranscript>> {
+        val path = "/api/transcripts?limit=$limit&email=${enc(email)}&token=${enc(token)}"
+        val url = endpoint(baseUrl, path)
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                val arr = json.optJSONArray("transcripts") ?: JSONArray()
+                (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    ServerTranscript(
+                        id = o.optLong("id"),
+                        filename = o.optString("filename"),
+                        chars = o.optInt("chars"),
+                        updatedAt = o.optString("updated_at"),
+                        analyzed = !o.isNull("analyzed_at") && o.optString("analyzed_at").isNotBlank(),
+                    )
+                }
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
+    /** サーバーに保存済みの文字起こし本文を取得する。 */
+    fun fetchServerTranscript(
+        baseUrl: String, email: String, token: String, id: Long,
+    ): kotlin.Result<ServerTranscriptDetail> {
+        val path = "/api/transcripts/$id?email=${enc(email)}&token=${enc(token)}"
+        val url = endpoint(baseUrl, path)
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                val o = json.getJSONObject("transcript")
+                ServerTranscriptDetail(
+                    id = o.optLong("id"),
+                    filename = o.optString("filename"),
+                    content = o.optString("content"),
+                    summary = o.optString("summary"),
+                    updatedAt = o.optString("updated_at"),
+                    analyzed = !o.isNull("analyzed_at") && o.optString("analyzed_at").isNotBlank(),
+                )
             } else {
                 throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
             }
@@ -404,6 +494,35 @@ class AiHelperClient {
             val json = JSONObject(text)
             if (code in 200..299 && json.optBoolean("ok")) {
                 AskResult(json.optString("reply"), json.optJSONArray("applied")?.length() ?: 0)
+            } else {
+                throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
+            }
+        }
+    }
+
+    /** サーバーに保存された秘書チャット履歴を取得する。 */
+    fun fetchChatHistory(baseUrl: String, email: String, token: String): kotlin.Result<List<ChatHistoryMessage>> {
+        val path = "/api/chat/history?email=${enc(email)}&token=${enc(token)}"
+        val url = endpoint(baseUrl, path)
+        return runCatching {
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("Accept", "application/json")
+            }
+            val (code, text) = readBody(conn)
+            val json = JSONObject(text)
+            if (code in 200..299 && json.optBoolean("ok")) {
+                val arr = json.optJSONArray("messages") ?: JSONArray()
+                (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    ChatHistoryMessage(
+                        role = o.optString("role"),
+                        content = o.optString("content"),
+                        createdAt = o.optString("created_at"),
+                    )
+                }
             } else {
                 throw RuntimeException(json.optString("error").ifBlank { "HTTP $code" })
             }

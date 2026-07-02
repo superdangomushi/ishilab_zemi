@@ -43,7 +43,13 @@ data class UiState(
     val sendingFile: String? = null,
     val sentFiles: Set<String> = emptySet(),
     val sendMessage: String? = null,
+    val serverTranscripts: List<AiHelperClient.ServerTranscript> = emptyList(),
+    val serverTranscriptsLoading: Boolean = false,
+    val serverTranscriptsError: String? = null,
+    val serverTranscriptDetail: AiHelperClient.ServerTranscriptDetail? = null,
+    val serverTranscriptLoadingId: Long? = null,
     val chatLog: List<ChatMessage> = emptyList(),
+    val chatHistoryLoading: Boolean = false,
     val askInProgress: Boolean = false,
     val tasks: List<AiHelperClient.Task> = emptyList(),
     val tasksLoading: Boolean = false,
@@ -100,6 +106,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (accountStore.loggedIn) {
             loadTasks()
             loadSummary()
+            loadServerTranscripts()
+            loadChatHistory()
         }
     }
 
@@ -183,6 +191,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     loadTasks()
                     loadSummary()
+                    loadServerTranscripts()
+                    loadChatHistory()
                     loadMoodle()
                     refreshGoogle()
                 },
@@ -201,7 +211,89 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             it.copy(
                 account = currentAccount(), sendMessage = null,
                 tasks = emptyList(), tasksError = null, chatLog = emptyList(),
-                summary = null, summaryError = null
+                summary = null, summaryError = null,
+                serverTranscripts = emptyList(),
+                serverTranscriptsLoading = false,
+                serverTranscriptsError = null,
+                serverTranscriptDetail = null,
+                serverTranscriptLoadingId = null,
+                chatHistoryLoading = false,
+            )
+        }
+    }
+
+    /** サーバーに保存済みの文字起こし一覧を取得する。 */
+    fun loadServerTranscripts() {
+        if (!accountStore.loggedIn) return
+        _ui.update { it.copy(serverTranscriptsLoading = true, serverTranscriptsError = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AIHelper.fetchServerTranscripts(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            result.fold(
+                onSuccess = { list ->
+                    _ui.update { it.copy(serverTranscripts = list, serverTranscriptsLoading = false) }
+                },
+                onFailure = { e ->
+                    _ui.update {
+                        it.copy(
+                            serverTranscriptsLoading = false,
+                            serverTranscriptsError = e.message ?: "取得に失敗しました"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    /** サーバーに保存済みの文字起こし本文を取得する。 */
+    fun loadServerTranscript(id: Long) {
+        if (!accountStore.loggedIn || _ui.value.serverTranscriptLoadingId == id) return
+        val cached = _ui.value.serverTranscriptDetail
+        if (cached?.id == id && cached.content.isNotBlank()) return
+        _ui.update { it.copy(serverTranscriptLoadingId = id, serverTranscriptsError = null) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AIHelper.fetchServerTranscript(accountStore.baseUrl, accountStore.email, accountStore.token, id)
+            }
+            result.fold(
+                onSuccess = { detail ->
+                    _ui.update { it.copy(serverTranscriptDetail = detail, serverTranscriptLoadingId = null) }
+                },
+                onFailure = { e ->
+                    _ui.update {
+                        it.copy(
+                            serverTranscriptLoadingId = null,
+                            serverTranscriptsError = e.message ?: "本文取得に失敗しました"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    /** サーバーに保存された秘書チャット履歴を取得し、画面上の会話を復元する。 */
+    fun loadChatHistory() {
+        if (!accountStore.loggedIn || _ui.value.chatHistoryLoading) return
+        _ui.update { it.copy(chatHistoryLoading = true) }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                AIHelper.fetchChatHistory(accountStore.baseUrl, accountStore.email, accountStore.token)
+            }
+            result.fold(
+                onSuccess = { history ->
+                    _ui.update {
+                        it.copy(
+                            chatHistoryLoading = false,
+                            chatLog = history.map { msg ->
+                                ChatMessage(msg.content, fromUser = msg.role == "user")
+                            }
+                        )
+                    }
+                },
+                onFailure = {
+                    _ui.update { it.copy(chatHistoryLoading = false) }
+                }
             )
         }
     }
@@ -305,6 +397,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val sent = if (result is AiHelperClient.Result.Ok) it.sentFiles + item.name else it.sentFiles
                 it.copy(sendingFile = null, sentFiles = sent, sendMessage = message)
             }
+            if (result is AiHelperClient.Result.Ok) loadServerTranscripts()
         }
     }
 
@@ -342,7 +435,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 it.copy(chatLog = it.chatLog + ChatMessage(reply, false), askInProgress = false)
             }
             // 秘書が予定・課題を追加/完了した可能性があるので、成功時は必ず一覧を更新。
-            if (result.isSuccess) loadTasks()
+            if (result.isSuccess) {
+                loadTasks()
+            }
         }
     }
 

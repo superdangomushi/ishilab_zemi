@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -35,6 +37,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
@@ -72,6 +75,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -142,7 +146,10 @@ class MainActivity : ComponentActivity() {
                         onRegister = viewModel::register,
                         onLogout = viewModel::logout,
                         onSend = viewModel::sendToServer,
+                        onLoadServerTranscripts = viewModel::loadServerTranscripts,
+                        onLoadServerTranscript = viewModel::loadServerTranscript,
                         onAsk = viewModel::ask,
+                        onLoadChatHistory = viewModel::loadChatHistory,
                         onLoadTasks = { viewModel.loadTasks() },
                         onToggleTask = viewModel::toggleTaskDone,
                         onSetShowDone = { viewModel.loadTasks(it) },
@@ -201,7 +208,10 @@ private fun MainScreen(
     onRegister: (String, String, String) -> Unit,
     onLogout: () -> Unit,
     onSend: (TranscriptItem) -> Unit,
+    onLoadServerTranscripts: () -> Unit,
+    onLoadServerTranscript: (Long) -> Unit,
     onAsk: (String) -> Unit,
+    onLoadChatHistory: () -> Unit,
     onLoadTasks: () -> Unit,
     onToggleTask: (AiHelperClient.Task) -> Unit,
     onSetShowDone: (Boolean) -> Unit,
@@ -221,6 +231,7 @@ private fun MainScreen(
     onLoadDaySummary: (String) -> Unit,
 ) {
     var tab by rememberSaveable { mutableStateOf(0) }
+    var chatOpen by rememberSaveable { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             topBar = { TopAppBar(title = { Text("常時録音・ローカル文字起こし") }) }
@@ -238,7 +249,7 @@ private fun MainScreen(
                 }
                 when (tab) {
                     0 -> RecordingTab(ui, service, onDownload, onSelectModel, onSetServerTranscribe, onStart, onStop)
-                    1 -> RecordsTab(ui, onRefresh, onSend)
+                    1 -> RecordsTab(ui, onRefresh, onSend, onLoadServerTranscripts, onLoadServerTranscript)
                     2 -> CalendarTab(ui, onLoadDaySummary)
                     else -> SecretaryTab(
                         ui, onLogin, onRegister, onLogout, onAsk, onLoadTasks, onToggleTask, onSetShowDone,
@@ -252,6 +263,24 @@ private fun MainScreen(
         // 音声→テキスト変換中は右上に小さく表示（操作は妨げない）。どの区間かと進捗も出す。
         if (service.transcribing) {
             TranscribingBadge(service)
+        }
+        FloatingActionButton(
+            onClick = { chatOpen = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 16.dp),
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+        ) {
+            Text("AI", style = MaterialTheme.typography.titleMedium)
+        }
+        if (chatOpen) {
+            AssistantChatDialog(
+                ui = ui,
+                onDismiss = { chatOpen = false },
+                onAsk = onAsk,
+                onLoadChatHistory = onLoadChatHistory,
+            )
         }
     }
 }
@@ -326,6 +355,28 @@ private fun RecordingTab(
 /** 文字起こし記録を「日付 → 時刻 → 本文」の階層で辿るタブ。 */
 @Composable
 private fun RecordsTab(
+    ui: UiState,
+    onRefresh: () -> Unit,
+    onSend: (TranscriptItem) -> Unit,
+    onLoadServerTranscripts: () -> Unit,
+    onLoadServerTranscript: (Long) -> Unit,
+) {
+    var source by rememberSaveable { mutableStateOf(0) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = source) {
+            Tab(selected = source == 0, onClick = { source = 0 }, text = { Text("端末") })
+            Tab(selected = source == 1, onClick = { source = 1 }, text = { Text("サーバー") })
+        }
+        when (source) {
+            0 -> LocalRecordsList(ui, onRefresh, onSend)
+            else -> ServerRecordsList(ui, onLoadServerTranscripts, onLoadServerTranscript)
+        }
+    }
+}
+
+@Composable
+private fun LocalRecordsList(
     ui: UiState,
     onRefresh: () -> Unit,
     onSend: (TranscriptItem) -> Unit,
@@ -423,6 +474,150 @@ private fun RecordsTab(
             }
         }
     }
+}
+
+/** サーバーに保存済みの文字起こし。サーバー文字起こしモードの最新テキストもここで読む。 */
+@Composable
+private fun ServerRecordsList(
+    ui: UiState,
+    onLoadServerTranscripts: () -> Unit,
+    onLoadServerTranscript: (Long) -> Unit,
+) {
+    var openId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val selectedId = openId
+
+    LaunchedEffect(ui.account.email) {
+        if (ui.account.loggedIn) onLoadServerTranscripts()
+    }
+    LaunchedEffect(selectedId) {
+        selectedId?.let { onLoadServerTranscript(it) }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (selectedId == null) "サーバー記録" else "サーバー記録 › 本文",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                OutlinedButton(
+                    onClick = onLoadServerTranscripts,
+                    enabled = ui.account.loggedIn && !ui.serverTranscriptsLoading
+                ) { Text("更新") }
+            }
+        }
+
+        if (!ui.account.loggedIn) {
+            item {
+                Text(
+                    "AIHelper にログインすると、Web と同じサーバー保存済みテキストを表示できます。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            return@LazyColumn
+        }
+
+        ui.serverTranscriptsError?.let { err ->
+            item { Text("取得エラー: $err", color = MaterialTheme.colorScheme.error) }
+        }
+
+        if (selectedId != null) {
+            item { TextButton(onClick = { openId = null }) { Text("← 一覧へ") } }
+            val detail = ui.serverTranscriptDetail?.takeIf { it.id == selectedId }
+            when {
+                detail == null || ui.serverTranscriptLoadingId == selectedId -> item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                else -> item { ServerTranscriptDetail(detail) }
+            }
+            return@LazyColumn
+        }
+
+        when {
+            ui.serverTranscriptsLoading && ui.serverTranscripts.isEmpty() -> item {
+                Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+            }
+            ui.serverTranscripts.isEmpty() -> item {
+                Text("サーバーに保存された記録はまだありません。", style = MaterialTheme.typography.bodySmall)
+            }
+            else -> items(ui.serverTranscripts) { transcript ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { openId = transcript.id }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            transcript.filename,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "${transcript.chars}文字 / ${formatServerTimestamp(transcript.updatedAt)}" +
+                                if (transcript.analyzed) " / 解析済み" else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerTranscriptDetail(detail: AiHelperClient.ServerTranscriptDetail) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(detail.filename, style = MaterialTheme.typography.titleSmall)
+            Text(
+                formatServerTimestamp(detail.updatedAt) + if (detail.analyzed) " / 解析済み" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (detail.summary.isNotBlank()) {
+                Text("要約", style = MaterialTheme.typography.labelLarge)
+                Text(detail.summary, style = MaterialTheme.typography.bodyMedium)
+            }
+            Text("本文", style = MaterialTheme.typography.labelLarge)
+            Text(
+                detail.content.ifBlank { "（空です）" },
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+            )
+        }
+    }
+}
+
+private fun formatServerTimestamp(value: String): String {
+    if (value.isBlank()) return "-"
+    return value
+        .replace('T', ' ')
+        .replace(Regex("\\.\\d{3}Z$"), "")
+        .replace(Regex("Z$"), "")
+        .take(16)
 }
 
 /** 本文と操作（共有・送信）をまとめた詳細表示。 */
@@ -1252,38 +1447,133 @@ private fun AiHelperLoginForm(
     }
 }
 
+/** どのタブからでも呼び出せる秘書チャット。 */
+@Composable
+private fun AssistantChatDialog(
+    ui: UiState,
+    onDismiss: () -> Unit,
+    onAsk: (String) -> Unit,
+    onLoadChatHistory: () -> Unit,
+) {
+    LaunchedEffect(ui.account.email) {
+        if (ui.account.loggedIn) onLoadChatHistory()
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 8.dp,
+            shadowElevation = 10.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.82f)
+                .widthIn(max = 560.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("AI秘書", style = MaterialTheme.typography.titleMedium)
+                    TextButton(onClick = onDismiss) { Text("閉じる") }
+                }
+                SecretaryChatPanel(
+                    ui = ui,
+                    onAsk = onAsk,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    expandMessages = true
+                )
+            }
+        }
+    }
+}
+
 /** 秘書チャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。 */
 @Composable
 private fun SecretaryCard(ui: UiState, onAsk: (String) -> Unit) {
-    var question by rememberSaveable { mutableStateOf("") }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("秘書に聞く / 頼む", style = MaterialTheme.typography.titleMedium)
-            if (ui.chatLog.isEmpty()) {
-                Text(
-                    "例) 今日の予定は？ / 来週月曜10時にゼミ入れといて / 数学の宿題が出てるらしい",
-                    style = MaterialTheme.typography.bodySmall
-                )
+            SecretaryChatPanel(
+                ui = ui,
+                onAsk = onAsk,
+                expandMessages = false
+            )
+        }
+    }
+}
+
+@Composable
+private fun SecretaryChatPanel(
+    ui: UiState,
+    onAsk: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    expandMessages: Boolean = false,
+) {
+    var question by rememberSaveable { mutableStateOf("") }
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!ui.account.loggedIn) {
+            Text(
+                "AIHelper にログインすると、予定・課題・文字起こしを見ながら相談できます。",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        val messageListModifier = if (expandMessages) {
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 320.dp)
+        }
+        LazyColumn(
+            modifier = messageListModifier,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (ui.chatHistoryLoading && ui.chatLog.isEmpty()) {
+                item { Text("履歴を読み込み中…", style = MaterialTheme.typography.bodySmall) }
+            } else if (ui.chatLog.isEmpty()) {
+                item {
+                    Text(
+                        "例) 今日の予定は？ / 来週月曜10時にゼミ入れといて / 数学の宿題が出てるらしい",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            } else {
+                items(ui.chatLog.takeLast(50)) { msg ->
+                    ChatBubble(msg)
+                }
             }
-            ui.chatLog.takeLast(8).forEach { msg ->
-                val prefix = if (msg.fromUser) "あなた: " else "秘書: "
-                Text(
-                    "$prefix${msg.text}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (msg.fromUser) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface
-                )
+            if (ui.askInProgress) {
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("考え中…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = question,
                 onValueChange = { question = it },
                 label = { Text("メッセージ") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.weight(1f),
+                enabled = ui.account.loggedIn && !ui.askInProgress,
+                maxLines = 3
             )
             Button(
                 onClick = { onAsk(question); question = "" },
-                enabled = !ui.askInProgress && question.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
+                enabled = ui.account.loggedIn && !ui.askInProgress && question.isNotBlank(),
             ) {
                 if (ui.askInProgress) {
                     CircularProgressIndicator(modifier = Modifier.height(18.dp), strokeWidth = 2.dp)
@@ -1292,6 +1582,34 @@ private fun SecretaryCard(ui: UiState, onAsk: (String) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChatBubble(msg: ChatMessage) {
+    val background = if (msg.fromUser) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val color = if (msg.fromUser) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (msg.fromUser) Arrangement.End else Arrangement.Start
+    ) {
+        Text(
+            msg.text,
+            modifier = Modifier
+                .widthIn(max = 420.dp)
+                .background(background, RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = color
+        )
     }
 }
 
