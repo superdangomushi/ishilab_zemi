@@ -269,11 +269,12 @@ async function saveAnalysis(id, kadai, yotei, summary) {
 }
 
 // 解析結果（課題 or 予定）を transcripts の生JSONから取得。kind は "kadai" | "yotei"。
-async function getAnalysis(id, kind) {
+// email を条件に含め、他アカウントの解析結果を取得できないようにする。
+async function getAnalysis(email, id, kind) {
   const column = kind === "yotei" ? "yotei_json" : "kadai_json";
   const [rows] = await pool.query(
-    `SELECT filename, ${column} AS json FROM transcripts WHERE id = ? LIMIT 1`,
-    [id]
+    `SELECT filename, ${column} AS json FROM transcripts WHERE id = ? AND email = ? LIMIT 1`,
+    [id, email]
   );
   if (!rows[0]) return null;
   let items = [];
@@ -318,16 +319,6 @@ function parseItems(json) {
   }
 }
 
-// 一覧（中身は含めない。サイズと更新時刻、解析済みかだけ）。
-async function listTranscripts() {
-  const [rows] = await pool.query(
-    `SELECT id, email, filename, CHAR_LENGTH(content) AS chars, updated_at, analyzed_at
-     FROM transcripts
-     ORDER BY updated_at DESC, id DESC`
-  );
-  return rows;
-}
-
 // アカウント本人の一覧（Android アプリなど、認証付き API 用）。
 async function listTranscriptsByEmail(email, limit = 100) {
   const [rows] = await pool.query(
@@ -339,15 +330,6 @@ async function listTranscriptsByEmail(email, limit = 100) {
     [email, Number(limit) || 100]
   );
   return rows;
-}
-
-// 1 件を中身ごと取得。
-async function getTranscript(id) {
-  const [rows] = await pool.query(
-    `SELECT id, email, filename, content FROM transcripts WHERE id = ? LIMIT 1`,
-    [id]
-  );
-  return rows[0] || null;
 }
 
 // アカウント本人の 1 件を中身ごと取得（Android アプリなど、認証付き API 用）。
@@ -1055,9 +1037,7 @@ module.exports = {
   saveAnalysis,
   getAnalysis,
   getTodaysAnalysisByEmail,
-  listTranscripts,
   listTranscriptsByEmail,
-  getTranscript,
   getTranscriptForEmail,
   getTranscriptsForDay,
   listEmailsForDailySummary,

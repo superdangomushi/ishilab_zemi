@@ -17,6 +17,10 @@ struct TranscriberApp: App {
                 .environmentObject(viewModel)
                 .environmentObject(service)
                 .tint(AppTheme.primary)
+                // Android は lightColorScheme 固定。iOS もライト固定にして配色を揃える
+                //（端末がダークモードのとき、固定ライトの AppTheme 色と反転した
+                //  systemBackground/.primary が混在して配色が崩れるのを防ぐ）。
+                .preferredColorScheme(.light)
                 // 締切リマインドの全画面アラート（Android の ReminderAlertActivity 相当）。
                 .fullScreenCover(isPresented: .constant(alertCenter.isPresenting)) {
                     ReminderAlertView()

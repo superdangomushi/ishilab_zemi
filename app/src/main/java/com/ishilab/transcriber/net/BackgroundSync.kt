@@ -236,5 +236,19 @@ class BackgroundSync(private val context: Context) {
         private const val KEY_SENT = "sent_files"
         // 再送の間隔（5分）。triggerNow でこの待機を打ち切って即時実行できる。
         private const val INTERVAL_MS = 5 * 60 * 1000L
+
+        /**
+         * 別アカウントでログインし直す前に呼ぶ。
+         * 端末に残った未送信の文字起こし・退避音声は前アカウントの録音なので、
+         * そのまま残すと新アカウントへアップロードされて他人のデータが混ざる。全て破棄する。
+         */
+        fun clearLocalPending(context: Context) {
+            for (name in listOf("transcripts", "audio-outbox")) {
+                File(context.filesDir, name).listFiles()?.forEach { it.delete() }
+            }
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().remove(KEY_SENT).apply()
+            Log.i(TAG, "cleared local pending data (account switched)")
+        }
     }
 }

@@ -4,34 +4,114 @@
 // 早稲田 Moodle など SSO 環境でも、カレンダーの「書き出し URL」はトークン付きで
 // 認証不要に取得できるためこの方式を使う。
 
+const dns = require("dns");
+const net = require("net");
 const db = require("./db");
 
-// iCal を取得（リダイレクト追従。https/http のみ）。
-function fetchIcs(url, redirectsLeft = 5) {
+// ---- SSRF 対策 ----
+// iCal の URL は各ユーザーが自由に設定できるため、そのまま取得すると
+// サーバーが内部リソースへアクセスさせられる（SSRF）。例えば
+//   http://169.254.169.254/...      クラウドのメタデータ（IAM 認証情報の窃取）
+//   http://localhost:3000/...       このアプリ自身の内部 API
+//   http://10.0.0.5/ など            同一 VPC 内の非公開サービス
+// これを防ぐため、http(s) のみ許可し、名前解決した IP がプライベート/ループバック/
+// リンクローカル等の予約レンジなら拒否する。リダイレクト先も毎ホップ検証する。
+// さらに DNS リバインディング（検証後に別 IP へ解決させる）を防ぐため、
+// 検証で得た IP に接続をピン留めする。
+function isBlockedAddress(ip) {
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const p = ip.split(".").map(Number);
+    if (p[0] === 0) return true;                      // 0.0.0.0/8
+    if (p[0] === 10) return true;                     // 10.0.0.0/8
+    if (p[0] === 127) return true;                    // ループバック
+    if (p[0] === 169 && p[1] === 254) return true;    // リンクローカル/メタデータ
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16.0.0/12
+    if (p[0] === 192 && p[1] === 168) return true;    // 192.168.0.0/16
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT 100.64/10
+    if (p[0] >= 224) return true;                     // マルチキャスト/予約
+    return false;
+  }
+  if (v === 6) {
+    const s = ip.toLowerCase();
+    if (s === "::1" || s === "::") return true;        // ループバック/未指定
+    if (s.startsWith("fe80")) return true;             // リンクローカル
+    if (s.startsWith("fc") || s.startsWith("fd")) return true; // ユニークローカル
+    // IPv4-mapped (::ffff:a.b.c.d) は埋め込み IPv4 で再判定。
+    const m = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (m) return isBlockedAddress(m[1]);
+    return false;
+  }
+  return true; // 判定不能なものは拒否
+}
+
+// ホスト名を解決し、全 IP が許可レンジなら「接続をピン留めする IP」を返す。
+// 危険な IP が1つでも含まれれば例外を投げる。
+function resolveSafeAddress(hostname) {
   return new Promise((resolve, reject) => {
-    let mod, u;
-    try {
-      u = new URL(url);
-      mod = u.protocol === "http:" ? require("http") : require("https");
-    } catch (e) {
-      return reject(new Error("URL が不正です"));
-    }
-    const req = mod.get(u, (res) => {
-      const status = res.statusCode || 0;
-      if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
-        res.resume();
-        const next = new URL(res.headers.location, u).toString();
-        return resolve(fetchIcs(next, redirectsLeft - 1));
+    // 数値 IP 直指定にも対応（lookup は IP をそのまま返す）。
+    dns.lookup(hostname, { all: true }, (err, addresses) => {
+      if (err || !addresses || !addresses.length) {
+        return reject(new Error("URL のホストを解決できません"));
       }
-      if (status < 200 || status >= 300) {
-        res.resume();
-        return reject(new Error(`iCal 取得に失敗 (HTTP ${status})`));
+      for (const a of addresses) {
+        if (isBlockedAddress(a.address)) {
+          return reject(new Error("内部/プライベートなアドレスへのアクセスは許可されていません"));
+        }
       }
-      let data = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (data += c));
-      res.on("end", () => resolve(data));
+      resolve(addresses[0]);
     });
+  });
+}
+
+// iCal を取得（リダイレクト追従。https/http のみ・SSRF 検証つき）。
+async function fetchIcs(url, redirectsLeft = 5) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch (e) {
+    throw new Error("URL が不正です");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error("http(s) の URL のみ取得できます");
+  }
+  const mod = u.protocol === "http:" ? require("http") : require("https");
+  const safe = await resolveSafeAddress(u.hostname);
+
+  return new Promise((resolve, reject) => {
+    const req = mod.get(
+      u,
+      {
+        // 検証済み IP に固定してリバインディングを防ぐ（Host ヘッダは元のまま送られる）。
+        lookup: (_host, _opts, cb) => cb(null, safe.address, safe.family),
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          const next = new URL(res.headers.location, u).toString();
+          // リダイレクト先も同じ検証を通す。
+          return resolve(fetchIcs(next, redirectsLeft - 1));
+        }
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return reject(new Error(`iCal 取得に失敗 (HTTP ${status})`));
+        }
+        let data = "";
+        let size = 0;
+        res.setEncoding("utf8");
+        res.on("data", (c) => {
+          size += Buffer.byteLength(c);
+          // 巨大レスポンスでメモリを食い潰されないよう上限（10MB）を設ける。
+          if (size > 10 * 1024 * 1024) {
+            req.destroy(new Error("iCal のサイズが大きすぎます"));
+            return;
+          }
+          data += c;
+        });
+        res.on("end", () => resolve(data));
+      }
+    );
     req.on("error", (e) => reject(e));
     req.setTimeout(20000, () => req.destroy(new Error("iCal 取得がタイムアウトしました")));
   });
