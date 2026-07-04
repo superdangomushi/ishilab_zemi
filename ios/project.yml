@@ -1,0 +1,75 @@
+# XcodeGen プロジェクト定義。
+#   brew install xcodegen
+#   cd ios && xcodegen generate && open Transcriber.xcodeproj
+# whisper.cpp は Android (app/src/main/cpp/CMakeLists.txt) と同じソース一覧を
+# CPU バックエンドのみで直接コンパイルする。
+name: Transcriber
+options:
+  bundleIdPrefix: com.ishilab
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: E26F3E38B5
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    GCC_C_LANGUAGE_STANDARD: gnu11
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - "$(inherited)"
+      - "GGML_USE_CPU=1"
+    HEADER_SEARCH_PATHS:
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp"
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp/src"
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp/include"
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/include"
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src"
+      - "$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu"
+  configs:
+    Release:
+      GCC_OPTIMIZATION_LEVEL: 3
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+targets:
+  Transcriber:
+    type: application
+    platform: iOS
+    sources:
+      - path: Transcriber
+      # ---- whisper.cpp（Android の CMakeLists.txt と同一のソース一覧） ----
+      - path: ../app/src/main/cpp/whisper.cpp/src/whisper.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml.c
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-alloc.c
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-backend.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-backend-reg.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-quants.c
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-threading.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.c
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-quants.c
+        group: whisper
+      - path: ../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-traits.cpp
+        group: whisper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ishilab.transcriber
+        SWIFT_OBJC_BRIDGING_HEADER: Transcriber/Transcriber-Bridging-Header.h
+        INFOPLIST_FILE: Transcriber/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: false
+        ENABLE_BITCODE: false

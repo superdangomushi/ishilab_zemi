@@ -1,0 +1,540 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0E9E88D5ADBC5BCEE93E1F7E /* ggml-threading.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDDCD98DF2736E18DDF665AD /* ggml-threading.cpp */; };
+		1A89333BF895332FE14F8AB5 /* WhisperEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55DE14893E2A4C3D04528132 /* WhisperEngine.swift */; };
+		1EB5B577F4B71759B0AA4743 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4870344837FCB28B6912F6DD /* ContentView.swift */; };
+		1ED850B7F71F979597C199A7 /* AudioChunker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 253B5E279EBEED14FB63854A /* AudioChunker.swift */; };
+		22EB1B370FF17951FF20CFDD /* RecordingTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DFB6ABAF09577670F049C71 /* RecordingTabView.swift */; };
+		2E1685A896096D0F0F826F02 /* AssistantChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B0527C52ADDF677F3138B95 /* AssistantChatView.swift */; };
+		2E19549CC4F79AE3FA4274CE /* TranscriptStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39CAE744120B88FB27F75CB6 /* TranscriptStore.swift */; };
+		325CD021D9AB7DE6A83AAE39 /* TaskEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91CABDD38BCA36F5221F8264 /* TaskEditView.swift */; };
+		43F861B7D5C7136EF1A2A165 /* ggml-cpu-aarch64.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C60358AD36FEC6171A178E0A /* ggml-cpu-aarch64.cpp */; };
+		4B671CB2FB3BC95AD6AFFC22 /* GoogleCalendarClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A24D4A5DE1885EB0BCF93EEC /* GoogleCalendarClient.swift */; };
+		520E9B9A45DA8AB92EBF7EEC /* AiHelperClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF7D5793BDCEC7780034E0C /* AiHelperClient.swift */; };
+		55E89AB9C454D399A6DB71EE /* TranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85EBDDB5843433A1D55CA60D /* TranscriptionEngine.swift */; };
+		59CB3A40CF5C3297B16FBC4E /* RecordsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A2A124673BA8526461653DD /* RecordsTabView.swift */; };
+		6813CEE62879653365E6F4E9 /* ggml-alloc.c in Sources */ = {isa = PBXBuildFile; fileRef = 0BE151B16756E92158F58FB0 /* ggml-alloc.c */; };
+		6DEEECF50CF16B797076F393 /* GoogleAccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3F7CFB9C05BFECC35047211 /* GoogleAccountStore.swift */; };
+		7185882E66795576E576A3E6 /* ggml-cpu-quants.c in Sources */ = {isa = PBXBuildFile; fileRef = 299E13ACA6C575DFBB5BFC74 /* ggml-cpu-quants.c */; };
+		79FD76CCB6A5055CB62D8480 /* CourseSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E3241D4824C2B31D7D30A1 /* CourseSchedule.swift */; };
+		7A0F3FB8A4347ED6F2EEDD4B /* ggml-backend-reg.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 46FCAF56F63C283C814415B3 /* ggml-backend-reg.cpp */; };
+		7D573116FFDCACFCA8E655C5 /* SecretaryTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */; };
+		938E60E9340278858548ACAD /* PcmSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EC3D1FC54881B56E9CA58E8 /* PcmSegment.swift */; };
+		95A9ED4E6A7A4814DB1A369D /* CalendarTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0761BE4C8A7D1448AAEAF4 /* CalendarTabView.swift */; };
+		9BEE1E653C12F391D4063895 /* ggml-cpu.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8E9558A3C902AD80CAFBA11 /* ggml-cpu.cpp */; };
+		9D07AC066340E8E77B22645D /* MainViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26393F7F88F37EF277B2BA9 /* MainViewModel.swift */; };
+		A3046122E2390DFE235EFD21 /* ReminderNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C470218F1B1A5D3C9F1ACC1 /* ReminderNotifier.swift */; };
+		A34CBAB6A037AB6B1E152690 /* ModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AB44F751B4485EEA2A5C25E /* ModelManager.swift */; };
+		A8E28FBCB9E2147A56F55AAA /* BackgroundSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BC883C633B2F8A83B9415F9 /* BackgroundSync.swift */; };
+		BE8EB089E827FB72367FB638 /* whisper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 77FEEF7481FC6502C79EE99E /* whisper.cpp */; };
+		C3F13CCF63B11FAC389B0866 /* ggml-backend.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B66461C3B930A2CE068FF6C /* ggml-backend.cpp */; };
+		C7C4151712B1D73015536E00 /* ReminderAlertView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CEFA86A26167BFBD95DE16 /* ReminderAlertView.swift */; };
+		CB2505914211968414C2D092 /* TranscriberApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B9CF1BE57C4E65A18D5903 /* TranscriberApp.swift */; };
+		D092E257E68D6F61BC5F5061 /* ggml-cpu-traits.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4A80653C5D99361158C6C473 /* ggml-cpu-traits.cpp */; };
+		D5DEF03499FB16F4109B515A /* DailyDigest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54AEB30C9CA5E09E72EB5259 /* DailyDigest.swift */; };
+		D86B76E30C53E2FE27A36AD8 /* ggml-quants.c in Sources */ = {isa = PBXBuildFile; fileRef = 1CE257F31762FB39172EF25A /* ggml-quants.c */; };
+		E14DBD75F0EADC10189B3AFF /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC47256CAC939FDD6D361EB /* AccountStore.swift */; };
+		E2107ACABC5CDD2ED117ED32 /* ggml.c in Sources */ = {isa = PBXBuildFile; fileRef = A529B2B42C7488677B4ECB44 /* ggml.c */; };
+		E9340A0262145EEB87DA8478 /* ggml-cpu-hbm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8C0C85A863FD9CF63357B06D /* ggml-cpu-hbm.cpp */; };
+		F37129E8EBC9BE71B87B6785 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF4771471C1778BC74C8B52C /* AudioCaptureService.swift */; };
+		FFE95859E7B4270668BECAEE /* ggml-cpu.c in Sources */ = {isa = PBXBuildFile; fileRef = 51CCF40CE2FE6F5E68CF0E5F /* ggml-cpu.c */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0BE151B16756E92158F58FB0 /* ggml-alloc.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "ggml-alloc.c"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-alloc.c"; sourceTree = "<group>"; };
+		0DFB6ABAF09577670F049C71 /* RecordingTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingTabView.swift; sourceTree = "<group>"; };
+		15B9CF1BE57C4E65A18D5903 /* TranscriberApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriberApp.swift; sourceTree = "<group>"; };
+		1AB44F751B4485EEA2A5C25E /* ModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManager.swift; sourceTree = "<group>"; };
+		1CE257F31762FB39172EF25A /* ggml-quants.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "ggml-quants.c"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-quants.c"; sourceTree = "<group>"; };
+		1F12CCF128387DEE3F1F2690 /* Transcriber-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Transcriber-Bridging-Header.h"; sourceTree = "<group>"; };
+		253B5E279EBEED14FB63854A /* AudioChunker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioChunker.swift; sourceTree = "<group>"; };
+		299E13ACA6C575DFBB5BFC74 /* ggml-cpu-quants.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "ggml-cpu-quants.c"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-quants.c"; sourceTree = "<group>"; };
+		2C470218F1B1A5D3C9F1ACC1 /* ReminderNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderNotifier.swift; sourceTree = "<group>"; };
+		2EC3D1FC54881B56E9CA58E8 /* PcmSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PcmSegment.swift; sourceTree = "<group>"; };
+		39CAE744120B88FB27F75CB6 /* TranscriptStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptStore.swift; sourceTree = "<group>"; };
+		3BC883C633B2F8A83B9415F9 /* BackgroundSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundSync.swift; sourceTree = "<group>"; };
+		3CF7D5793BDCEC7780034E0C /* AiHelperClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiHelperClient.swift; sourceTree = "<group>"; };
+		46FCAF56F63C283C814415B3 /* ggml-backend-reg.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-backend-reg.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-backend-reg.cpp"; sourceTree = "<group>"; };
+		4870344837FCB28B6912F6DD /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		4A80653C5D99361158C6C473 /* ggml-cpu-traits.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-cpu-traits.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-traits.cpp"; sourceTree = "<group>"; };
+		51CCF40CE2FE6F5E68CF0E5F /* ggml-cpu.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "ggml-cpu.c"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.c"; sourceTree = "<group>"; };
+		54AEB30C9CA5E09E72EB5259 /* DailyDigest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyDigest.swift; sourceTree = "<group>"; };
+		55DE14893E2A4C3D04528132 /* WhisperEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperEngine.swift; sourceTree = "<group>"; };
+		5A2A124673BA8526461653DD /* RecordsTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordsTabView.swift; sourceTree = "<group>"; };
+		6B0527C52ADDF677F3138B95 /* AssistantChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantChatView.swift; sourceTree = "<group>"; };
+		77FEEF7481FC6502C79EE99E /* whisper.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = whisper.cpp; path = ../app/src/main/cpp/whisper.cpp/src/whisper.cpp; sourceTree = "<group>"; };
+		85EBDDB5843433A1D55CA60D /* TranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionEngine.swift; sourceTree = "<group>"; };
+		8B66461C3B930A2CE068FF6C /* ggml-backend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-backend.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-backend.cpp"; sourceTree = "<group>"; };
+		8C0C85A863FD9CF63357B06D /* ggml-cpu-hbm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-cpu-hbm.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp"; sourceTree = "<group>"; };
+		91CABDD38BCA36F5221F8264 /* TaskEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEditView.swift; sourceTree = "<group>"; };
+		9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTabView.swift; sourceTree = "<group>"; };
+		A24D4A5DE1885EB0BCF93EEC /* GoogleCalendarClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleCalendarClient.swift; sourceTree = "<group>"; };
+		A26393F7F88F37EF277B2BA9 /* MainViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewModel.swift; sourceTree = "<group>"; };
+		A4E3241D4824C2B31D7D30A1 /* CourseSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CourseSchedule.swift; sourceTree = "<group>"; };
+		A529B2B42C7488677B4ECB44 /* ggml.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = ggml.c; path = ../app/src/main/cpp/whisper.cpp/ggml/src/ggml.c; sourceTree = "<group>"; };
+		B29EE599CB9A159C19E9DB88 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C60358AD36FEC6171A178E0A /* ggml-cpu-aarch64.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-cpu-aarch64.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-aarch64.cpp"; sourceTree = "<group>"; };
+		CDDCD98DF2736E18DDF665AD /* ggml-threading.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-threading.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-threading.cpp"; sourceTree = "<group>"; };
+		D5B76BB4EBDFD120F68CBC7B /* Transcriber.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Transcriber.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E5CEFA86A26167BFBD95DE16 /* ReminderAlertView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReminderAlertView.swift; sourceTree = "<group>"; };
+		EEC47256CAC939FDD6D361EB /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
+		EF4771471C1778BC74C8B52C /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
+		F3F7CFB9C05BFECC35047211 /* GoogleAccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAccountStore.swift; sourceTree = "<group>"; };
+		F8E9558A3C902AD80CAFBA11 /* ggml-cpu.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-cpu.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu.cpp"; sourceTree = "<group>"; };
+		FA0761BE4C8A7D1448AAEAF4 /* CalendarTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarTabView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		10C3991902F76385A2A78350 /* Service */ = {
+			isa = PBXGroup;
+			children = (
+				A4E3241D4824C2B31D7D30A1 /* CourseSchedule.swift */,
+				54AEB30C9CA5E09E72EB5259 /* DailyDigest.swift */,
+			);
+			path = Service;
+			sourceTree = "<group>";
+		};
+		11C0DA0ECA6AED994D0E4EA6 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				EF4771471C1778BC74C8B52C /* AudioCaptureService.swift */,
+				253B5E279EBEED14FB63854A /* AudioChunker.swift */,
+				2EC3D1FC54881B56E9CA58E8 /* PcmSegment.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		13FCA189699B6B6C3CDE7B55 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				6B0527C52ADDF677F3138B95 /* AssistantChatView.swift */,
+				FA0761BE4C8A7D1448AAEAF4 /* CalendarTabView.swift */,
+				A26393F7F88F37EF277B2BA9 /* MainViewModel.swift */,
+				0DFB6ABAF09577670F049C71 /* RecordingTabView.swift */,
+				5A2A124673BA8526461653DD /* RecordsTabView.swift */,
+				E5CEFA86A26167BFBD95DE16 /* ReminderAlertView.swift */,
+				9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */,
+				91CABDD38BCA36F5221F8264 /* TaskEditView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		2EBEF5BDF0077230C9558065 = {
+			isa = PBXGroup;
+			children = (
+				E890AF81BDD67F1CB89B9F00 /* Transcriber */,
+				B4698D25FFCFBB515A8B8D22 /* whisper */,
+				B5C47DA106CFB7244F15E022 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		65B844C79F52C1F647C2BC3C /* Net */ = {
+			isa = PBXGroup;
+			children = (
+				EEC47256CAC939FDD6D361EB /* AccountStore.swift */,
+				3CF7D5793BDCEC7780034E0C /* AiHelperClient.swift */,
+				3BC883C633B2F8A83B9415F9 /* BackgroundSync.swift */,
+				2C470218F1B1A5D3C9F1ACC1 /* ReminderNotifier.swift */,
+			);
+			path = Net;
+			sourceTree = "<group>";
+		};
+		67C0A493219864804E77527A /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				1AB44F751B4485EEA2A5C25E /* ModelManager.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		72E69CB9EF8A535520909A53 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				4870344837FCB28B6912F6DD /* ContentView.swift */,
+				15B9CF1BE57C4E65A18D5903 /* TranscriberApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		AB6498269F59E53C39B0CC80 /* Google */ = {
+			isa = PBXGroup;
+			children = (
+				F3F7CFB9C05BFECC35047211 /* GoogleAccountStore.swift */,
+				A24D4A5DE1885EB0BCF93EEC /* GoogleCalendarClient.swift */,
+			);
+			path = Google;
+			sourceTree = "<group>";
+		};
+		B4698D25FFCFBB515A8B8D22 /* whisper */ = {
+			isa = PBXGroup;
+			children = (
+				0BE151B16756E92158F58FB0 /* ggml-alloc.c */,
+				46FCAF56F63C283C814415B3 /* ggml-backend-reg.cpp */,
+				8B66461C3B930A2CE068FF6C /* ggml-backend.cpp */,
+				C60358AD36FEC6171A178E0A /* ggml-cpu-aarch64.cpp */,
+				8C0C85A863FD9CF63357B06D /* ggml-cpu-hbm.cpp */,
+				299E13ACA6C575DFBB5BFC74 /* ggml-cpu-quants.c */,
+				4A80653C5D99361158C6C473 /* ggml-cpu-traits.cpp */,
+				51CCF40CE2FE6F5E68CF0E5F /* ggml-cpu.c */,
+				F8E9558A3C902AD80CAFBA11 /* ggml-cpu.cpp */,
+				1CE257F31762FB39172EF25A /* ggml-quants.c */,
+				CDDCD98DF2736E18DDF665AD /* ggml-threading.cpp */,
+				A529B2B42C7488677B4ECB44 /* ggml.c */,
+				77FEEF7481FC6502C79EE99E /* whisper.cpp */,
+			);
+			name = whisper;
+			sourceTree = "<group>";
+		};
+		B5C47DA106CFB7244F15E022 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D5B76BB4EBDFD120F68CBC7B /* Transcriber.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E890AF81BDD67F1CB89B9F00 /* Transcriber */ = {
+			isa = PBXGroup;
+			children = (
+				B29EE599CB9A159C19E9DB88 /* Info.plist */,
+				1F12CCF128387DEE3F1F2690 /* Transcriber-Bridging-Header.h */,
+				72E69CB9EF8A535520909A53 /* App */,
+				11C0DA0ECA6AED994D0E4EA6 /* Audio */,
+				AB6498269F59E53C39B0CC80 /* Google */,
+				67C0A493219864804E77527A /* Model */,
+				65B844C79F52C1F647C2BC3C /* Net */,
+				10C3991902F76385A2A78350 /* Service */,
+				FF7FE95266BB033E90660708 /* Transcribe */,
+				13FCA189699B6B6C3CDE7B55 /* UI */,
+			);
+			path = Transcriber;
+			sourceTree = "<group>";
+		};
+		FF7FE95266BB033E90660708 /* Transcribe */ = {
+			isa = PBXGroup;
+			children = (
+				85EBDDB5843433A1D55CA60D /* TranscriptionEngine.swift */,
+				39CAE744120B88FB27F75CB6 /* TranscriptStore.swift */,
+				55DE14893E2A4C3D04528132 /* WhisperEngine.swift */,
+			);
+			path = Transcribe;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		DC3C3054B1D759173F72F523 /* Transcriber */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D40DF07FA4364DD5040F8402 /* Build configuration list for PBXNativeTarget "Transcriber" */;
+			buildPhases = (
+				500DEC5475F85F6910204E76 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Transcriber;
+			packageProductDependencies = (
+			);
+			productName = Transcriber;
+			productReference = D5B76BB4EBDFD120F68CBC7B /* Transcriber.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B873BF05231D1E1132761BF8 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					DC3C3054B1D759173F72F523 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 9CBD78D6B35E86ACCCEBB14D /* Build configuration list for PBXProject "Transcriber" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 2EBEF5BDF0077230C9558065;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = B5C47DA106CFB7244F15E022 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DC3C3054B1D759173F72F523 /* Transcriber */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		500DEC5475F85F6910204E76 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E14DBD75F0EADC10189B3AFF /* AccountStore.swift in Sources */,
+				520E9B9A45DA8AB92EBF7EEC /* AiHelperClient.swift in Sources */,
+				2E1685A896096D0F0F826F02 /* AssistantChatView.swift in Sources */,
+				F37129E8EBC9BE71B87B6785 /* AudioCaptureService.swift in Sources */,
+				1ED850B7F71F979597C199A7 /* AudioChunker.swift in Sources */,
+				A8E28FBCB9E2147A56F55AAA /* BackgroundSync.swift in Sources */,
+				95A9ED4E6A7A4814DB1A369D /* CalendarTabView.swift in Sources */,
+				1EB5B577F4B71759B0AA4743 /* ContentView.swift in Sources */,
+				79FD76CCB6A5055CB62D8480 /* CourseSchedule.swift in Sources */,
+				D5DEF03499FB16F4109B515A /* DailyDigest.swift in Sources */,
+				6DEEECF50CF16B797076F393 /* GoogleAccountStore.swift in Sources */,
+				4B671CB2FB3BC95AD6AFFC22 /* GoogleCalendarClient.swift in Sources */,
+				9D07AC066340E8E77B22645D /* MainViewModel.swift in Sources */,
+				A34CBAB6A037AB6B1E152690 /* ModelManager.swift in Sources */,
+				938E60E9340278858548ACAD /* PcmSegment.swift in Sources */,
+				22EB1B370FF17951FF20CFDD /* RecordingTabView.swift in Sources */,
+				59CB3A40CF5C3297B16FBC4E /* RecordsTabView.swift in Sources */,
+				C7C4151712B1D73015536E00 /* ReminderAlertView.swift in Sources */,
+				A3046122E2390DFE235EFD21 /* ReminderNotifier.swift in Sources */,
+				7D573116FFDCACFCA8E655C5 /* SecretaryTabView.swift in Sources */,
+				325CD021D9AB7DE6A83AAE39 /* TaskEditView.swift in Sources */,
+				CB2505914211968414C2D092 /* TranscriberApp.swift in Sources */,
+				2E19549CC4F79AE3FA4274CE /* TranscriptStore.swift in Sources */,
+				55E89AB9C454D399A6DB71EE /* TranscriptionEngine.swift in Sources */,
+				1A89333BF895332FE14F8AB5 /* WhisperEngine.swift in Sources */,
+				6813CEE62879653365E6F4E9 /* ggml-alloc.c in Sources */,
+				7A0F3FB8A4347ED6F2EEDD4B /* ggml-backend-reg.cpp in Sources */,
+				C3F13CCF63B11FAC389B0866 /* ggml-backend.cpp in Sources */,
+				43F861B7D5C7136EF1A2A165 /* ggml-cpu-aarch64.cpp in Sources */,
+				E9340A0262145EEB87DA8478 /* ggml-cpu-hbm.cpp in Sources */,
+				7185882E66795576E576A3E6 /* ggml-cpu-quants.c in Sources */,
+				D092E257E68D6F61BC5F5061 /* ggml-cpu-traits.cpp in Sources */,
+				FFE95859E7B4270668BECAEE /* ggml-cpu.c in Sources */,
+				9BEE1E653C12F391D4063895 /* ggml-cpu.cpp in Sources */,
+				D86B76E30C53E2FE27A36AD8 /* ggml-quants.c in Sources */,
+				0E9E88D5ADBC5BCEE93E1F7E /* ggml-threading.cpp in Sources */,
+				E2107ACABC5CDD2ED117ED32 /* ggml.c in Sources */,
+				BE8EB089E827FB72367FB638 /* whisper.cpp in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		3A82BD3F81469D8AD8DA5FF3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 26Y4P6BK77;
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Transcriber/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ishilab.transcriber;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Transcriber/Transcriber-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		8A462A925E9D1F88C8BA7BB0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = 26Y4P6BK77;
+				ENABLE_BITCODE = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Transcriber/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.ishilab.transcriber;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Transcriber/Transcriber-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		AA0AF7601767578097374C66 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = E26F3E38B5;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GGML_USE_CPU=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/src",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/include",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/include",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		D7F603F7124F05B0C2ECB768 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = E26F3E38B5;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 3;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"GGML_USE_CPU=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/src",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/include",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/include",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src",
+					"$(SRCROOT)/../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		9CBD78D6B35E86ACCCEBB14D /* Build configuration list for PBXProject "Transcriber" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0AF7601767578097374C66 /* Debug */,
+				D7F603F7124F05B0C2ECB768 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D40DF07FA4364DD5040F8402 /* Build configuration list for PBXNativeTarget "Transcriber" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8A462A925E9D1F88C8BA7BB0 /* Debug */,
+				3A82BD3F81469D8AD8DA5FF3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = B873BF05231D1E1132761BF8 /* Project object */;
+}
