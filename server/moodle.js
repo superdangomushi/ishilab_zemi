@@ -4,12 +4,22 @@
 // 早稲田 Moodle など SSO 環境でも、カレンダーの「書き出し URL」はトークン付きで
 // 認証不要に取得できるためこの方式を使う。
 
-const db = require("./db");
 const dns = require("dns").promises;
 const net = require("net");
+const db = require("./db");
 
 const MAX_ICS_BYTES = Math.max(Number(process.env.MOODLE_MAX_ICS_BYTES || 2 * 1024 * 1024), 1024);
 
+// ---- SSRF 対策 ----
+// iCal の URL は各ユーザーが自由に設定できるため、そのまま取得すると
+// サーバーが内部リソースへアクセスさせられる（SSRF）。例えば
+//   https://169.254.169.254/...     クラウドのメタデータ（IAM 認証情報の窃取）
+//   https://localhost:3000/...      このアプリ自身の内部 API
+//   https://10.0.0.5/ など           同一 VPC 内の非公開サービス
+// これを防ぐため、https のみ許可し、名前解決した IP がプライベート/ループバック/
+// リンクローカル等の予約レンジなら拒否する。リダイレクト先も毎ホップ検証する。
+// さらに DNS リバインディング（検証後に別 IP へ解決させる）を防ぐため、
+// 検証で得た IP に接続をピン留めする。
 function isPrivateIPv4(ip) {
   const parts = ip.split(".").map((x) => Number(x));
   if (parts.length !== 4 || parts.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) return true;
@@ -19,20 +29,26 @@ function isPrivateIPv4(ip) {
     a === 127 ||
     a === 0 ||
     a >= 224 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64/10
+    (a === 169 && b === 254) || // リンクローカル/メタデータ
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19))
+    (a === 198 && (b === 18 || b === 19)) // ベンチマーク用予約レンジ
   );
 }
 
 function isPrivateIPv6(ip) {
   const s = ip.toLowerCase();
-  return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80:");
+  if (s === "::1" || s === "::") return true; // ループバック/未指定
+  if (s.startsWith("fe80")) return true; // リンクローカル
+  if (s.startsWith("fc") || s.startsWith("fd")) return true; // ユニークローカル
+  // IPv4-mapped (::ffff:a.b.c.d) は埋め込み IPv4 で再判定（そうしないと素通りしてしまう）。
+  const m = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (m) return isPrivateIPv4(m[1]);
+  return false;
 }
 
-async function assertPublicHttpUrl(url) {
+async function assertPublicHttpsUrl(url) {
   let u;
   try {
     u = new URL(url);
@@ -66,9 +82,10 @@ async function assertPublicHttpUrl(url) {
   return { url: u, address: addresses[0].address, family: addresses[0].family };
 }
 
-// iCal を取得（リダイレクト追従。SSRF 対策のため https の公開アドレスのみ許可）。
+// iCal を取得（リダイレクト追従。SSRF 対策のため https の公開アドレスのみ許可、
+// 検証済み IP へ接続をピン留めしてリバインディングも防ぐ）。
 async function fetchIcs(url, redirectsLeft = 5) {
-  const checked = await assertPublicHttpUrl(url);
+  const checked = await assertPublicHttpsUrl(url);
   const u = checked.url;
   return new Promise((resolve, reject) => {
     const mod = require("https");
@@ -79,6 +96,7 @@ async function fetchIcs(url, redirectsLeft = 5) {
       if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
         res.resume();
         const next = new URL(res.headers.location, u).toString();
+        // リダイレクト先も同じ検証を通す。
         return resolve(fetchIcs(next, redirectsLeft - 1));
       }
       if (status < 200 || status >= 300) {
@@ -187,7 +205,7 @@ async function syncUser(email, url) {
   const ics = await fetchIcs(url);
   const events = parseEvents(ics);
   console.log(`[Moodle Sync] パース完了: 全 ${events.length} 件のイベントを取得しました。`);
-  
+
   let imported = 0;
   for (const ev of events) {
     // 「提出」「due」「課題」を含むものは課題、それ以外は予定として登録。
@@ -196,7 +214,7 @@ async function syncUser(email, url) {
     const content = ev.course ? `[${ev.course}] ${ev.summary}` : ev.summary;
     const details = [ev.course ? `授業: ${ev.course}` : "", ev.description]
       .filter((s) => s).join(" / ") || "Moodle";
-      
+
     console.log(`[Moodle Sync] ${isKadai ? '課題' : '予定'}を検知 - 科目: ${ev.course || '(科目情報なし)'}, タイトル: ${ev.summary}, 期限: ${ev.at}`);
 
     await db.addTask(email, {

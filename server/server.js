@@ -219,6 +219,51 @@ function serverErr(e, context) {
   return "サーバー内部でエラーが発生しました";
 }
 
+// ---- ログイン試行のレート制限（総当たり対策） ----
+// パスワードは sha256 保存とはいえ、試行回数に制限が無いと弱いパスワードを
+// オンラインで総当たりされうる。IP ごとに直近の失敗回数を数え、一定回数を超えたら
+// 短時間ロックする（メモリ管理。サーバー再起動でリセットされるが実害は小さい）。
+const LOGIN_MAX_FAILS = Number(process.env.LOGIN_MAX_FAILS || 10);
+const LOGIN_LOCK_MS = Number(process.env.LOGIN_LOCK_SEC || 900) * 1000; // 既定15分
+const loginAttempts = new Map(); // key -> { fails, firstAt, lockedUntil }
+
+function loginRateKey(req) {
+  // プロキシ配下では X-Forwarded-For の先頭が実 IP。無ければ接続元。
+  const fwd = (req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return fwd || req.socket?.remoteAddress || "unknown";
+}
+
+// true を返したらブロック（レスポンスは呼び出し側で返す）。
+function isLoginBlocked(req) {
+  const rec = loginAttempts.get(loginRateKey(req));
+  return Boolean(rec && rec.lockedUntil && rec.lockedUntil > Date.now());
+}
+
+function recordLoginFailure(req) {
+  const key = loginRateKey(req);
+  const now = Date.now();
+  const rec = loginAttempts.get(key) || { fails: 0, firstAt: now, lockedUntil: 0 };
+  // 前回ロックが切れていれば数え直す。
+  if (rec.lockedUntil && rec.lockedUntil <= now) {
+    rec.fails = 0;
+    rec.firstAt = now;
+    rec.lockedUntil = 0;
+  }
+  rec.fails += 1;
+  if (rec.fails >= LOGIN_MAX_FAILS) rec.lockedUntil = now + LOGIN_LOCK_MS;
+  loginAttempts.set(key, rec);
+  // 溜まった古いレコードを掃除。
+  if (loginAttempts.size > 5000) {
+    for (const [k, v] of loginAttempts) {
+      if ((v.lockedUntil || v.firstAt) < now - LOGIN_LOCK_MS) loginAttempts.delete(k);
+    }
+  }
+}
+
+function recordLoginSuccess(req) {
+  loginAttempts.delete(loginRateKey(req));
+}
+
 // API 用の認証ヘルパ。ヘッダ（推奨）または互換用 JSON body から email+token を取り、照合する（非同期）。
 async function authFromReq(req) {
   const email = req.get("X-Account-Email") || req.body?.email || "";
@@ -266,6 +311,12 @@ app.post("/api/register", authLimiter, async (req, res) => {
 // いずれも成功時は API 用トークンを返す（Web はこれを保存して以降の API に使う）。
 app.post("/api/login", authLimiter, async (req, res) => {
   const { email, token, password } = req.body || {};
+  if (isLoginBlocked(req)) {
+    return res.status(429).json({
+      ok: false,
+      error: "ログイン試行が多すぎます。しばらく待ってから再度お試しください",
+    });
+  }
   try {
     let account = null;
     if (password) {
@@ -282,8 +333,10 @@ app.post("/api/login", authLimiter, async (req, res) => {
       account = await resolveAccount(email, token);
     }
     if (!account) {
+      recordLoginFailure(req);
       return res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
     }
+    recordLoginSuccess(req);
     res.json({ ok: true, email: account.email, token: account.token, line: Boolean(account.lineUserId) });
   } catch (e) {
     console.error("ログイン処理に失敗:", e.message);
@@ -1513,12 +1566,14 @@ function contentDisposition(filename) {
 app.get("/kadai/:id.csv", async (req, res) => serveAnalysisCsv(req, res, "kadai", "課題"));
 app.get("/yotei/:id.csv", async (req, res) => serveAnalysisCsv(req, res, "yotei", "予定"));
 
+// 本人確認したうえで、本人の文字起こしに紐づく解析結果だけを返す
+// （認証なしだと ID を総当たりするだけで全ユーザーの課題・予定が読めてしまう）。
 async function serveAnalysisCsv(req, res, kind, label) {
   const account = await authFromReq(req);
   if (!account) return res.status(401).type("text/plain").send("認証エラー");
   let data;
   try {
-    data = await db.getAnalysisForEmail(account.email, req.params.id, kind);
+    data = await db.getAnalysis(account.email, req.params.id, kind);
   } catch (e) {
     return res.status(500).type("text/plain").send(serverErr(e, "db"));
   }
@@ -1535,6 +1590,7 @@ app.get("/", (_req, res) => {
 });
 
 // ブラウザ内で本文を確認するための JSON 取得（ダッシュボードのモーダル用）。
+// 認証必須。本人の文字起こししか取得できない。
 app.get("/api/transcript/:id", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
@@ -1547,6 +1603,7 @@ app.get("/api/transcript/:id", async (req, res) => {
   }
 });
 
+// 本文ダウンロード。認証必須（<a> リンクから使うため email/token はクエリで渡せる）。
 app.get("/download/:id", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).type("text/plain").send("認証エラー");

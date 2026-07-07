@@ -67,6 +67,22 @@ final class BackgroundSync {
         currentHourFile = name
     }
 
+    /// 別アカウントでログインし直す前に呼ぶ。
+    /// 端末に残った未送信の文字起こし・退避音声は前アカウントの録音なので、
+    /// そのまま残すと新アカウントへアップロードされて他人のデータが混ざる。全て破棄する。
+    static func clearLocalPending() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        for name in ["transcripts", "audio-outbox"] {
+            let dir = docs.appendingPathComponent(name, isDirectory: true)
+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            for file in files {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+        UserDefaults.standard.removeObject(forKey: keySent)
+        NSLog("BackgroundSync: cleared local pending data (account switched)")
+    }
+
     /// すぐに送信パスを走らせる（時刻ファイルの切り替わりや終了時に呼ぶ）。
     func triggerNow() {
         cond.lock()

@@ -286,6 +286,12 @@ final class MainViewModel: ObservableObject {
             }
             switch result {
             case .success(let token):
+                // 別アカウントへの切り替えなら、前アカウントの未送信録音・文字起こしを破棄する
+                //（残したままだと BackgroundSync が新アカウントでアップロードし、他人のデータが混ざる）。
+                let previousEmail = accountStore.email
+                if !previousEmail.isEmpty && previousEmail != mail {
+                    BackgroundSync.clearLocalPending()
+                }
                 accountStore.save(baseUrl: url, email: mail, token: token)
                 ui.loginInProgress = false
                 ui.loginError = nil

@@ -284,6 +284,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             result.fold(
                 onSuccess = { token ->
+                    // 別アカウントへの切り替えなら、前アカウントの未送信録音・文字起こしを破棄する
+                    //（残したままだと BackgroundSync が新アカウントでアップロードし、他人のデータが混ざる）。
+                    val previousEmail = accountStore.email
+                    if (previousEmail.isNotEmpty() && previousEmail != mail) {
+                        BackgroundSync.clearLocalPending(getApplication())
+                    }
                     accountStore.save(url, mail, token)
                     _ui.update {
                         it.copy(loginInProgress = false, loginError = null, account = currentAccount())
