@@ -51,6 +51,58 @@ const SUMMARY_PREGENERATE_LEAD_MIN = Number(process.env.DAILY_SUMMARY_PREGENERAT
 
 const app = express();
 
+app.set("trust proxy", process.env.TRUST_PROXY === "1");
+
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "same-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  if (req.secure || req.headers["x-forwarded-proto"] === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+  }
+  next();
+});
+
+function rateLimit({ windowMs, max, keyPrefix, keyOf }) {
+  const hits = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of hits) {
+      if (value.resetAt <= now) hits.delete(key);
+    }
+  }, Math.max(windowMs, 60_000)).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    const rawKey = keyOf ? keyOf(req) : (req.ip || req.socket.remoteAddress || "unknown");
+    const key = `${keyPrefix}:${rawKey || "unknown"}`;
+    const current = hits.get(key);
+    if (!current || current.resetAt <= now) {
+      hits.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    current.count += 1;
+    if (current.count > max) {
+      res.setHeader("Retry-After", String(Math.ceil((current.resetAt - now) / 1000)));
+      return res.status(429).json({ ok: false, error: "リクエストが多すぎます。少し待ってから再試行してください" });
+    }
+    next();
+  };
+}
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 20,
+  keyPrefix: "auth",
+  keyOf: (req) => `${req.ip || req.socket.remoteAddress || ""}:${String(req.body?.email || "").toLowerCase()}`,
+});
+const heavyLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  max: 30,
+  keyPrefix: "heavy",
+  keyOf: (req) => String(req.get("X-Account-Email") || req.body?.email || req.ip || req.socket.remoteAddress || ""),
+});
+
 app.use(express.json({ limit: "10mb" }));
 app.use(express.text({ type: "text/plain", limit: "10mb" }));
 // 資料アップロード（PDF 等）はバイナリで受ける。
@@ -63,15 +115,42 @@ function loadAccounts() {
   try {
     return JSON.parse(fs.readFileSync(ACCOUNTS_FILE, "utf8"));
   } catch (e) {
+    if (e.code === "ENOENT") return [];
     console.error("accounts.json の読み込みに失敗:", e.message);
     return [];
   }
 }
 
-// ---- 自己登録ユーザー（MySQL 保存・sha256 ハッシュ） ----
-// パスワードは平文で持たず、sha256(salt + password) の16進のみを保存する。
+// ---- 自己登録ユーザー（MySQL 保存・scrypt ハッシュ） ----
+// 既存の sha256(salt + password) 形式はログイン時だけ互換検証し、成功時に scrypt へ移行する。
 function sha256(salt, password) {
   return crypto.createHash("sha256").update(salt + String(password)).digest("hex");
+}
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const n = 16384;
+  const r = 8;
+  const p = 1;
+  const derived = crypto.scryptSync(String(password), salt, 64, { N: n, r, p }).toString("hex");
+  return { salt, hash: `scrypt$${n}$${r}$${p}$${salt}$${derived}` };
+}
+function timingSafeHexEqual(a, b) {
+  if (!/^[0-9a-f]+$/i.test(a || "") || !/^[0-9a-f]+$/i.test(b || "")) return false;
+  const ab = Buffer.from(a, "hex");
+  const bb = Buffer.from(b, "hex");
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}
+function verifyPassword(user, password) {
+  const stored = String(user?.password_hash || "");
+  if (stored.startsWith("scrypt$")) {
+    const [, n, r, p, salt, expected] = stored.split("$");
+    if (!n || !r || !p || !salt || !expected) return { ok: false, legacy: false };
+    const actual = crypto.scryptSync(String(password), salt, 64, {
+      N: Number(n), r: Number(r), p: Number(p),
+    }).toString("hex");
+    return { ok: timingSafeHexEqual(actual, expected), legacy: false };
+  }
+  return { ok: stored === sha256(user.salt, password), legacy: true };
 }
 function genSalt() {
   return crypto.randomBytes(16).toString("hex"); // 32 hex chars
@@ -133,6 +212,13 @@ function escapeHtml(s) {
   );
 }
 
+// 例外の詳細（DB エラー・スタック・内部パス等）はクライアントへ返さない。
+// サーバーログには全文を残し、レスポンスには汎用メッセージだけを載せる。
+function serverErr(e, context) {
+  console.error(context ? `サーバーエラー(${context}):` : "サーバーエラー:", e?.message || e);
+  return "サーバー内部でエラーが発生しました";
+}
+
 // ---- ログイン試行のレート制限（総当たり対策） ----
 // パスワードは sha256 保存とはいえ、試行回数に制限が無いと弱いパスワードを
 // オンラインで総当たりされうる。IP ごとに直近の失敗回数を数え、一定回数を超えたら
@@ -178,14 +264,12 @@ function recordLoginSuccess(req) {
   loginAttempts.delete(loginRateKey(req));
 }
 
-// API 用の認証ヘルパ。body / query / ヘッダのいずれかから email+token を取り、照合する（非同期）。
+// API 用の認証ヘルパ。ヘッダ（推奨）または互換用 JSON body から email+token を取り、照合する（非同期）。
 async function authFromReq(req) {
-  const email =
-    req.get("X-Account-Email") || req.body?.email || req.query.email || "";
+  const email = req.get("X-Account-Email") || req.body?.email || "";
   const token =
     (req.get("Authorization") || "").replace(/^Bearer\s+/i, "") ||
     req.body?.token ||
-    req.query.token ||
     "";
   return resolveAccount(email, token);
 }
@@ -195,7 +279,7 @@ async function authFromReq(req) {
 // =====================================================================
 
 // 新規ユーザー登録（Web 用）。メール＋パスワードで登録し、API 用トークンを発行する。
-app.post("/api/register", async (req, res) => {
+app.post("/api/register", authLimiter, async (req, res) => {
   const email = String(req.body?.email || "").trim();
   const password = String(req.body?.password || "");
   if (!email || !password) {
@@ -212,8 +296,7 @@ app.post("/api/register", async (req, res) => {
     if (loadAccounts().some((a) => a.email === email) || (await db.userExists(email))) {
       return res.status(409).json({ ok: false, error: "このメールは既に登録されています" });
     }
-    const salt = genSalt();
-    const passwordHash = sha256(salt, password);
+    const { salt, hash: passwordHash } = hashPassword(password);
     const token = genToken();
     await db.createUser(email, salt, passwordHash, token);
     console.log(`ユーザー登録: ${email}`);
@@ -226,7 +309,7 @@ app.post("/api/register", async (req, res) => {
 
 // ログイン。Web はメール＋パスワード、アプリはメール＋トークンで照合する。
 // いずれも成功時は API 用トークンを返す（Web はこれを保存して以降の API に使う）。
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", authLimiter, async (req, res) => {
   const { email, token, password } = req.body || {};
   if (isLoginBlocked(req)) {
     return res.status(429).json({
@@ -238,7 +321,12 @@ app.post("/api/login", async (req, res) => {
     let account = null;
     if (password) {
       const u = await db.getUserByEmail(email);
-      if (u && u.password_hash === sha256(u.salt, password)) {
+      const verified = u ? verifyPassword(u, password) : { ok: false };
+      if (u && verified.ok) {
+        if (verified.legacy) {
+          const next = hashPassword(password);
+          await db.updateUserPassword(u.email, next.salt, next.hash);
+        }
         account = { email: u.email, token: u.token, lineUserId: "" };
       }
     } else {
@@ -270,11 +358,11 @@ app.post("/api/change-password", async (req, res) => {
     if (!u) {
       return res.status(400).json({ ok: false, error: "このアカウントはパスワード変更に対応していません" });
     }
-    if (u.password_hash !== sha256(u.salt, currentPassword)) {
+    if (!verifyPassword(u, currentPassword).ok) {
       return res.status(401).json({ ok: false, error: "現在のパスワードが違います" });
     }
-    const salt = genSalt();
-    await db.updateUserPassword(account.email, salt, sha256(salt, newPassword));
+    const next = hashPassword(newPassword);
+    await db.updateUserPassword(account.email, next.salt, next.hash);
     res.json({ ok: true });
   } catch (e) {
     console.error("パスワード変更に失敗:", e.message);
@@ -289,7 +377,7 @@ app.get("/api/courses", async (req, res) => {
   try {
     res.json({ ok: true, courses: await db.listCourses(account.email) });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -303,7 +391,7 @@ app.post("/api/courses", async (req, res) => {
     res.json({ ok: true, count: courses.length });
   } catch (e) {
     console.error("時間割の保存に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -319,7 +407,7 @@ app.patch("/api/courses/:id", async (req, res) => {
     if (!ok) return res.status(404).json({ ok: false, error: "科目が見つかりません" });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -331,13 +419,13 @@ app.delete("/api/courses/:id", async (req, res) => {
     if (!ok) return res.status(404).json({ ok: false, error: "科目が見つかりません" });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
 // 資料ファイル（PDF/TXT）を受け取り、その場で Gemini 要約して DB に保存する。
 // Content-Type が text/plain ならテキスト、application/pdf 等ならバイナリで受ける。
-app.post("/api/files", async (req, res) => {
+app.post("/api/files", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   if (!gemini.isConfigured()) {
@@ -366,7 +454,7 @@ app.post("/api/files", async (req, res) => {
     res.json({ ok: true, name, summary });
   } catch (e) {
     console.error("資料要約に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -377,7 +465,7 @@ app.get("/api/files", async (req, res) => {
     const docs = await db.listDocuments(account.email, 100);
     res.json({ ok: true, documents: docs });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -390,7 +478,7 @@ app.post("/api/google-link", async (req, res) => {
     await db.setGoogleEmail(account.email, googleEmail);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -403,7 +491,7 @@ app.post("/api/calendar/sync", async (req, res) => {
     await db.replaceCalendarEvents(account.email, events);
     res.json({ ok: true, count: events.length });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -413,10 +501,22 @@ app.post("/api/calendar/sync", async (req, res) => {
 // OAuth の state → どのユーザーの連携要求か（CSRF 対策。10分で失効）。
 const googleOAuthStates = new Map();
 
+// OAuth の redirect_uri。原則は環境変数 GOOGLE_REDIRECT_URL を明示指定する。
+// 未指定時のみ Host ヘッダから組み立てるが、Host ヘッダ汚染を防ぐため許可ホスト
+// （GOOGLE_ALLOWED_HOSTS のカンマ区切り、なければリクエストの Host）に限定し、本番では https を強制する。
 function googleRedirectUri(req) {
   if (process.env.GOOGLE_REDIRECT_URL) return process.env.GOOGLE_REDIRECT_URL;
-  const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
-  return `${proto}://${req.get("host")}/api/google/callback`;
+  const host = req.get("host") || "";
+  const allow = String(process.env.GOOGLE_ALLOWED_HOSTS || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  if (allow.length && !allow.includes(host)) {
+    throw new Error("この Host からの Google 連携は許可されていません（GOOGLE_REDIRECT_URL を設定してください）");
+  }
+  const isProd = process.env.NODE_ENV === "production";
+  const proto = isProd
+    ? "https"
+    : (req.headers["x-forwarded-proto"] || req.protocol || "http");
+  return `${proto}://${host}/api/google/callback`;
 }
 
 // 同意画面の URL を返す。ブラウザ側はこの URL へ遷移する。
@@ -430,7 +530,12 @@ app.get("/api/google/auth-url", async (req, res) => {
     });
   }
   const state = crypto.randomBytes(24).toString("hex");
-  const redirectUri = googleRedirectUri(req);
+  let redirectUri;
+  try {
+    redirectUri = googleRedirectUri(req);
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
   googleOAuthStates.set(state, { email: account.email, redirectUri, expires: Date.now() + 10 * 60_000 });
   // 溜まった期限切れ state を掃除。
   for (const [k, v] of googleOAuthStates) if (v.expires < Date.now()) googleOAuthStates.delete(k);
@@ -464,7 +569,7 @@ app.get("/api/google/accounts", async (req, res) => {
     const rows = await db.listGoogleAccounts(account.email);
     res.json({ ok: true, configured: google.isConfigured(), accounts: rows.map((r) => r.google_email) });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -476,7 +581,7 @@ app.post("/api/google/unlink", async (req, res) => {
     await db.removeGoogleAccount(account.email, String(req.body?.googleEmail || ""));
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -522,7 +627,7 @@ app.get("/api/google/events", async (req, res) => {
     events.sort((a, b) => a.startMillis - b.startMillis);
     res.json({ ok: true, events, error: errors.join(" / ") || undefined });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -540,7 +645,7 @@ app.post("/api/google/add-event", async (req, res) => {
     const token = await google.accessTokenOf(decryptCred(row.refresh_token));
     await google.insertDeadline(token, content, String(req.body?.deadline || ""), Boolean(req.body?.dateOnly));
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -639,7 +744,7 @@ app.post("/api/google/sync-courses", async (req, res) => {
 
     res.json({ ok: true, count: successCount, skipped: skippedCount, googleEmail: row.google_email });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -652,7 +757,7 @@ app.get("/api/moodle", async (req, res) => {
     const url = await db.getMoodleUrl(account.email);
     res.json({ ok: true, url: url || "" });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -667,7 +772,7 @@ app.get("/api/stt-quality", async (req, res) => {
     const quality = await db.getSttQuality(account.email);
     res.json({ ok: true, quality, choices: STT_QUALITIES });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -682,7 +787,7 @@ app.post("/api/stt-quality", async (req, res) => {
     await db.setSttQuality(account.email, quality);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -690,14 +795,14 @@ app.post("/api/moodle", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   const url = String(req.body?.url || "").trim();
-  if (url && !/^https?:\/\//i.test(url)) {
-    return res.status(400).json({ ok: false, error: "http(s) の URL を入力してください" });
+  if (url && !/^https:\/\//i.test(url)) {
+    return res.status(400).json({ ok: false, error: "https の URL を入力してください" });
   }
   try {
     await db.setMoodleUrl(account.email, url);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -714,7 +819,7 @@ app.get("/api/waseda", async (req, res) => {
       hasPassword: Boolean(row?.waseda_password_enc),
     });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -761,7 +866,7 @@ app.post("/api/waseda/sync", async (req, res) => {
       return res.status(400).json({ ok: false, error: "先に Waseda アカウントを保存してください" });
     }
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({ ok: false, error: serverErr(e) });
   }
   const job = { state: "running", message: "時間割を取得しています…", log: "", startedAt: Date.now() };
   wasedaSyncJobs.set(account.email, job);
@@ -843,7 +948,7 @@ app.get("/api/waseda/credentials", async (req, res) => {
   }
 });
 
-app.post("/api/moodle/sync", async (req, res) => {
+app.post("/api/moodle/sync", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   try {
@@ -853,13 +958,13 @@ app.post("/api/moodle/sync", async (req, res) => {
     res.json({ ok: true, imported });
   } catch (e) {
     console.error(`Moodle 同期に失敗 (${account.email}):`, e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
 // 音声ファイルの受信 → ジョブ登録（文字起こしは外部PCワーカーが非同期で実行）。
 // 端末での Whisper 処理の代わりに、録音した WAV をそのまま送れる。
-app.post("/api/audio", async (req, res) => {
+app.post("/api/audio", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
@@ -885,7 +990,7 @@ app.get("/api/audio/jobs", async (req, res) => {
     const jobs = await db.listAudioJobs(account.email, Number(req.query.limit) || 30);
     res.json({ ok: true, jobs });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -906,7 +1011,7 @@ app.post("/api/audio/worker/claim", async (req, res) => {
     });
   } catch (e) {
     console.error("外部音声ワーカーのジョブ確保に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -929,7 +1034,7 @@ app.get("/api/audio/worker/jobs/:id/file", async (req, res) => {
     res.sendFile(path.resolve(job.stored_path));
   } catch (e) {
     console.error("外部音声ワーカーの音声取得に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -948,12 +1053,12 @@ app.post("/api/audio/worker/jobs/:id/result", async (req, res) => {
     res.json(result);
   } catch (e) {
     console.error("外部音声ワーカーの結果保存に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
 // 文字起こしテキストの受信 → MySQL に保存 → Gemini で課題/予定/要約を抽出。
-app.post("/api/upload", async (req, res) => {
+app.post("/api/upload", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) {
     return res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
@@ -1016,7 +1121,7 @@ app.get("/api/transcripts", async (req, res) => {
     const transcripts = await db.listTranscriptsByEmail(account.email, limit);
     res.json({ ok: true, transcripts });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1029,7 +1134,7 @@ app.get("/api/transcripts/:id", async (req, res) => {
     if (!row) return res.status(404).json({ ok: false, error: "見つかりません" });
     res.json({ ok: true, transcript: row });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1039,7 +1144,7 @@ app.get("/api/transcripts/:id", async (req, res) => {
 
 // POST /api/ask  body: { email, token, question }
 // 質問に答え、依頼（予定追加・完了化）なら実行する。
-app.post("/api/ask", async (req, res) => {
+app.post("/api/ask", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
   if (!gemini.isConfigured()) {
@@ -1188,7 +1293,7 @@ app.post("/api/ask", async (req, res) => {
     res.json({ ok: true, reply, applied });
   } catch (e) {
     console.error("ask に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1200,7 +1305,7 @@ app.get("/api/chat/history", async (req, res) => {
     const messages = await db.listRecentChatMessages(account.email, 50);
     res.json({ ok: true, messages });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1274,7 +1379,7 @@ app.get("/api/tasks", async (req, res) => {
     const tasks = await db.listUpcomingTasks(account.email, { includeDone });
     res.json({ ok: true, tasks });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1294,7 +1399,7 @@ app.post("/api/tasks", async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1316,7 +1421,7 @@ app.patch("/api/tasks/:id", async (req, res) => {
     if (!ok) return res.status(404).json({ ok: false, error: "見つかりません" });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1332,7 +1437,7 @@ app.post("/api/tasks/:id/done", async (req, res) => {
     if (!ok) return res.status(404).json({ ok: false, error: "見つかりません" });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1344,7 +1449,7 @@ app.delete("/api/tasks/:id", async (req, res) => {
     if (!ok) return res.status(404).json({ ok: false, error: "見つかりません" });
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1371,12 +1476,12 @@ app.get("/api/summary/:day", async (req, res) => {
     const row = await db.getDailySummary(account.email, day);
     res.json({ ok: true, day, summary: row ? row.summary : "", generated_at: row?.generated_at || null });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
 // その日の要約をいま生成し直す。
-app.post("/api/summary/:day/generate", async (req, res) => {
+app.post("/api/summary/:day/generate", heavyLimiter, async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   if (!gemini.isConfigured()) return res.status(503).json({ ok: false, error: "Gemini が未設定です" });
@@ -1385,7 +1490,7 @@ app.post("/api/summary/:day/generate", async (req, res) => {
     const summary = await reminders.generateDailySummary(account.email, day);
     res.json({ ok: true, day, summary, empty: !summary });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1396,7 +1501,7 @@ app.get("/api/summaries", async (req, res) => {
     const rows = await db.listDailySummaries(account.email, 30);
     res.json({ ok: true, summaries: rows });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1412,7 +1517,7 @@ app.get("/api/reminders", async (req, res) => {
     const items = await db.pendingNotifications(account.email);
     res.json({ ok: true, reminders: items });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1424,7 +1529,7 @@ app.post("/api/reminders/ack", async (req, res) => {
     await db.ackNotifications(account.email, req.body?.ids || []);
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1470,7 +1575,7 @@ async function serveAnalysisCsv(req, res, kind, label) {
   try {
     data = await db.getAnalysis(account.email, req.params.id, kind);
   } catch (e) {
-    return res.status(500).type("text/plain").send("DB 接続エラー: " + e.message);
+    return res.status(500).type("text/plain").send(serverErr(e, "db"));
   }
   if (!data) return res.status(404).type("text/plain").send("見つかりません");
   const base = data.filename.replace(/\.[^.]+$/, "");
@@ -1494,7 +1599,7 @@ app.get("/api/transcript/:id", async (req, res) => {
     if (!row) return res.status(404).json({ ok: false, error: "見つかりません" });
     res.json({ ok: true, filename: row.filename, content: row.content, summary: row.summary || "" });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1506,7 +1611,7 @@ app.get("/download/:id", async (req, res) => {
   try {
     row = await db.getTranscriptForEmail(account.email, req.params.id);
   } catch (e) {
-    return res.status(500).type("text/plain").send("DB 接続エラー: " + e.message);
+    return res.status(500).type("text/plain").send(serverErr(e, "db"));
   }
   if (!row) return res.status(404).type("text/plain").send("見つかりません");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -1526,7 +1631,7 @@ app.post("/api/send-summary", async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error("日次サマリ送信に失敗:", e.message);
-    res.status(500).json({ ok: false, error: e.message });
+    res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
@@ -1963,8 +2068,6 @@ function renderDashboard() {
     let auth = JSON.parse(localStorage.getItem('mb_auth') || '{}');
     function headers(){ return { 'Content-Type':'application/json',
       'X-Account-Email': auth.email||'', 'Authorization':'Bearer '+(auth.token||'') }; }
-    // <a> リンク（DL/CSV）はヘッダを付けられないため、認証情報をクエリで渡す。
-    function authQuery(){ return 'email='+encodeURIComponent(auth.email||'')+'&token='+encodeURIComponent(auth.token||''); }
     const AUTO_REFRESH_MS = 15000;
     const GOOGLE_REFRESH_MS = 60000;
     let activeTab = 'chat';
@@ -2611,14 +2714,15 @@ function renderDashboard() {
         const rows = list.map(t => {
           const analyzed = !!t.analyzed_at;
           const csvLinks = analyzed
-            ? '<a class="dl csv" href="/kadai/'+t.id+'.csv?'+authQuery()+'">課題CSV</a> <a class="dl csv" href="/yotei/'+t.id+'.csv?'+authQuery()+'">予定CSV</a>'
+            ? '<button class="small" onclick="downloadFile(\\'/kadai/'+t.id+'.csv\\', \\'kadai-'+t.id+'.csv\\')">課題CSV</button> ' +
+              '<button class="small" onclick="downloadFile(\\'/yotei/'+t.id+'.csv\\', \\'yotei-'+t.id+'.csv\\')">予定CSV</button>'
             : '<span class="pending">未解析</span>';
           return '<tr>'+
             '<td>'+escapeHtml(t.filename)+'</td>'+
             '<td class="num">'+(t.chars || 0)+'</td>'+
             '<td>'+new Date(t.updated_at).toLocaleString('ja-JP')+'</td>'+
             '<td><button class="small" onclick="viewText('+t.id+')">本文</button> '+
-            '<a class="dl" href="/download/'+t.id+'?'+authQuery()+'">DL</a></td>'+
+            '<button class="small" onclick="downloadFile(\\'/download/'+t.id+'\\', '+JSON.stringify(t.filename || ('transcript-'+t.id+'.txt'))+')">DL</button></td>'+
             '<td>'+csvLinks+'</td>'+
           '</tr>';
         }).join('');
@@ -2643,6 +2747,31 @@ function renderDashboard() {
           $('modalBody').textContent = (t.summary ? '【要約】\\n'+t.summary+'\\n\\n【本文】\\n' : '') + (t.content || '');
         } else { $('modalTitle').textContent = 'エラー'; $('modalBody').textContent = j.error||''; }
       } catch(e){ $('modalTitle').textContent='通信エラー'; }
+    }
+
+    async function downloadFile(path, fallbackName){
+      try {
+        const r = await fetch(path, {headers: headers()});
+        if(!r.ok){
+          alert('ダウンロードに失敗しました');
+          return;
+        }
+        const blob = await r.blob();
+        let filename = fallbackName || 'download';
+        const cd = r.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\\*=UTF-8''([^;]+)/);
+        if(m) filename = decodeURIComponent(m[1]);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch(e){
+        alert('ダウンロードに失敗しました');
+      }
     }
     function closeModal(){ $('modal').style.display = 'none'; }
 

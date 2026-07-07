@@ -4,114 +4,118 @@
 // 早稲田 Moodle など SSO 環境でも、カレンダーの「書き出し URL」はトークン付きで
 // 認証不要に取得できるためこの方式を使う。
 
-const dns = require("dns");
+const dns = require("dns").promises;
 const net = require("net");
 const db = require("./db");
+
+const MAX_ICS_BYTES = Math.max(Number(process.env.MOODLE_MAX_ICS_BYTES || 2 * 1024 * 1024), 1024);
 
 // ---- SSRF 対策 ----
 // iCal の URL は各ユーザーが自由に設定できるため、そのまま取得すると
 // サーバーが内部リソースへアクセスさせられる（SSRF）。例えば
-//   http://169.254.169.254/...      クラウドのメタデータ（IAM 認証情報の窃取）
-//   http://localhost:3000/...       このアプリ自身の内部 API
-//   http://10.0.0.5/ など            同一 VPC 内の非公開サービス
-// これを防ぐため、http(s) のみ許可し、名前解決した IP がプライベート/ループバック/
+//   https://169.254.169.254/...     クラウドのメタデータ（IAM 認証情報の窃取）
+//   https://localhost:3000/...      このアプリ自身の内部 API
+//   https://10.0.0.5/ など           同一 VPC 内の非公開サービス
+// これを防ぐため、https のみ許可し、名前解決した IP がプライベート/ループバック/
 // リンクローカル等の予約レンジなら拒否する。リダイレクト先も毎ホップ検証する。
 // さらに DNS リバインディング（検証後に別 IP へ解決させる）を防ぐため、
 // 検証で得た IP に接続をピン留めする。
-function isBlockedAddress(ip) {
-  const v = net.isIP(ip);
-  if (v === 4) {
-    const p = ip.split(".").map(Number);
-    if (p[0] === 0) return true;                      // 0.0.0.0/8
-    if (p[0] === 10) return true;                     // 10.0.0.0/8
-    if (p[0] === 127) return true;                    // ループバック
-    if (p[0] === 169 && p[1] === 254) return true;    // リンクローカル/メタデータ
-    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16.0.0/12
-    if (p[0] === 192 && p[1] === 168) return true;    // 192.168.0.0/16
-    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT 100.64/10
-    if (p[0] >= 224) return true;                     // マルチキャスト/予約
-    return false;
-  }
-  if (v === 6) {
-    const s = ip.toLowerCase();
-    if (s === "::1" || s === "::") return true;        // ループバック/未指定
-    if (s.startsWith("fe80")) return true;             // リンクローカル
-    if (s.startsWith("fc") || s.startsWith("fd")) return true; // ユニークローカル
-    // IPv4-mapped (::ffff:a.b.c.d) は埋め込み IPv4 で再判定。
-    const m = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (m) return isBlockedAddress(m[1]);
-    return false;
-  }
-  return true; // 判定不能なものは拒否
+function isPrivateIPv4(ip) {
+  const parts = ip.split(".").map((x) => Number(x));
+  if (parts.length !== 4 || parts.some((x) => !Number.isInteger(x) || x < 0 || x > 255)) return true;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64/10
+    (a === 169 && b === 254) || // リンクローカル/メタデータ
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) // ベンチマーク用予約レンジ
+  );
 }
 
-// ホスト名を解決し、全 IP が許可レンジなら「接続をピン留めする IP」を返す。
-// 危険な IP が1つでも含まれれば例外を投げる。
-function resolveSafeAddress(hostname) {
-  return new Promise((resolve, reject) => {
-    // 数値 IP 直指定にも対応（lookup は IP をそのまま返す）。
-    dns.lookup(hostname, { all: true }, (err, addresses) => {
-      if (err || !addresses || !addresses.length) {
-        return reject(new Error("URL のホストを解決できません"));
-      }
-      for (const a of addresses) {
-        if (isBlockedAddress(a.address)) {
-          return reject(new Error("内部/プライベートなアドレスへのアクセスは許可されていません"));
-        }
-      }
-      resolve(addresses[0]);
-    });
-  });
+function isPrivateIPv6(ip) {
+  const s = ip.toLowerCase();
+  if (s === "::1" || s === "::") return true; // ループバック/未指定
+  if (s.startsWith("fe80")) return true; // リンクローカル
+  if (s.startsWith("fc") || s.startsWith("fd")) return true; // ユニークローカル
+  // IPv4-mapped (::ffff:a.b.c.d) は埋め込み IPv4 で再判定（そうしないと素通りしてしまう）。
+  const m = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (m) return isPrivateIPv4(m[1]);
+  return false;
 }
 
-// iCal を取得（リダイレクト追従。https/http のみ・SSRF 検証つき）。
-async function fetchIcs(url, redirectsLeft = 5) {
+async function assertPublicHttpsUrl(url) {
   let u;
   try {
     u = new URL(url);
-  } catch (e) {
+  } catch (_e) {
     throw new Error("URL が不正です");
   }
-  if (u.protocol !== "http:" && u.protocol !== "https:") {
-    throw new Error("http(s) の URL のみ取得できます");
+  if (u.protocol !== "https:") {
+    throw new Error("Moodle URL は https のみ使用できます");
   }
-  const mod = u.protocol === "http:" ? require("http") : require("https");
-  const safe = await resolveSafeAddress(u.hostname);
+  if (u.username || u.password) {
+    throw new Error("ユーザー名・パスワードを含む URL は使用できません");
+  }
+  const host = u.hostname;
+  if (!host || host === "localhost") throw new Error("このホストには接続できません");
+  const ipType = net.isIP(host);
+  if (ipType === 4) {
+    if (isPrivateIPv4(host)) throw new Error("このホストには接続できません");
+    return { url: u, address: host, family: 4 };
+  }
+  if (ipType === 6) {
+    if (isPrivateIPv6(host)) throw new Error("このホストには接続できません");
+    return { url: u, address: host, family: 6 };
+  }
+  const addresses = await dns.lookup(host, { all: true, verbatim: true });
+  if (!addresses.length) throw new Error("ホスト名を解決できません");
+  for (const a of addresses) {
+    if ((a.family === 4 && isPrivateIPv4(a.address)) || (a.family === 6 && isPrivateIPv6(a.address))) {
+      throw new Error("このホストには接続できません");
+    }
+  }
+  return { url: u, address: addresses[0].address, family: addresses[0].family };
+}
 
+// iCal を取得（リダイレクト追従。SSRF 対策のため https の公開アドレスのみ許可、
+// 検証済み IP へ接続をピン留めしてリバインディングも防ぐ）。
+async function fetchIcs(url, redirectsLeft = 5) {
+  const checked = await assertPublicHttpsUrl(url);
+  const u = checked.url;
   return new Promise((resolve, reject) => {
-    const req = mod.get(
-      u,
-      {
-        // 検証済み IP に固定してリバインディングを防ぐ（Host ヘッダは元のまま送られる）。
-        lookup: (_host, _opts, cb) => cb(null, safe.address, safe.family),
-      },
-      (res) => {
-        const status = res.statusCode || 0;
-        if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
-          res.resume();
-          const next = new URL(res.headers.location, u).toString();
-          // リダイレクト先も同じ検証を通す。
-          return resolve(fetchIcs(next, redirectsLeft - 1));
-        }
-        if (status < 200 || status >= 300) {
-          res.resume();
-          return reject(new Error(`iCal 取得に失敗 (HTTP ${status})`));
-        }
-        let data = "";
-        let size = 0;
-        res.setEncoding("utf8");
-        res.on("data", (c) => {
-          size += Buffer.byteLength(c);
-          // 巨大レスポンスでメモリを食い潰されないよう上限（10MB）を設ける。
-          if (size > 10 * 1024 * 1024) {
-            req.destroy(new Error("iCal のサイズが大きすぎます"));
-            return;
-          }
-          data += c;
-        });
-        res.on("end", () => resolve(data));
+    const mod = require("https");
+    const req = mod.get(u, {
+      lookup: (_hostname, _options, cb) => cb(null, checked.address, checked.family),
+    }, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        const next = new URL(res.headers.location, u).toString();
+        // リダイレクト先も同じ検証を通す。
+        return resolve(fetchIcs(next, redirectsLeft - 1));
       }
-    );
+      if (status < 200 || status >= 300) {
+        res.resume();
+        return reject(new Error(`iCal 取得に失敗 (HTTP ${status})`));
+      }
+      let data = "";
+      let bytes = 0;
+      res.setEncoding("utf8");
+      res.on("data", (c) => {
+        bytes += Buffer.byteLength(c, "utf8");
+        if (bytes > MAX_ICS_BYTES) {
+          req.destroy(new Error("iCal が大きすぎます"));
+          return;
+        }
+        data += c;
+      });
+      res.on("end", () => resolve(data));
+    });
     req.on("error", (e) => reject(e));
     req.setTimeout(20000, () => req.destroy(new Error("iCal 取得がタイムアウトしました")));
   });
@@ -201,7 +205,7 @@ async function syncUser(email, url) {
   const ics = await fetchIcs(url);
   const events = parseEvents(ics);
   console.log(`[Moodle Sync] パース完了: 全 ${events.length} 件のイベントを取得しました。`);
-  
+
   let imported = 0;
   for (const ev of events) {
     // 「提出」「due」「課題」を含むものは課題、それ以外は予定として登録。
@@ -210,7 +214,7 @@ async function syncUser(email, url) {
     const content = ev.course ? `[${ev.course}] ${ev.summary}` : ev.summary;
     const details = [ev.course ? `授業: ${ev.course}` : "", ev.description]
       .filter((s) => s).join(" / ") || "Moodle";
-      
+
     console.log(`[Moodle Sync] ${isKadai ? '課題' : '予定'}を検知 - 科目: ${ev.course || '(科目情報なし)'}, タイトル: ${ev.summary}, 期限: ${ev.at}`);
 
     await db.addTask(email, {

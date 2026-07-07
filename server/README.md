@@ -106,7 +106,8 @@ npm start
 
 ## アカウント登録（LINE 連携）
 
-`accounts.json` に「アカウント(email)」「事前に作るトークン」、LINE 送信先の `lineUserId` を書く。
+`accounts.example.json` を `accounts.json` にコピーし、「アカウント(email)」「事前に作るトークン」、LINE 送信先の `lineUserId` を書く。
+`accounts.json` は機密を含むため git 管理しない。
 アプリでログインしたアカウントがここと一致したときだけ受け付ける。
 
 ```json
@@ -162,8 +163,8 @@ npm start
 | GET | `/download/:id` | 文字起こしを `.txt` でダウンロード |
 | GET | `/kadai/:id.csv` / `/yotei/:id.csv` | 抽出した課題/予定を CSV（`期限,内容,詳細`）で取得 |
 
-認証は API 共通で、`X-Account-Email` + `Authorization: Bearer <token>` ヘッダ、
-または JSON ボディ / クエリの `email` `token` のいずれかで渡す。
+認証は API 共通で、`X-Account-Email` + `Authorization: Bearer <token>` ヘッダで渡す。
+互換性のため一部 POST は JSON ボディの `email` `token` も受け付けるが、URL クエリには載せない。
 
 ### POST /api/upload
 ```

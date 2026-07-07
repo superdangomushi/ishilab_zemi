@@ -5,3 +5,6 @@ users.json
 
 # ローカル環境変数（機密を含むためコミットしない）
 .env
+accounts.json
+.cred-key
+uploads/

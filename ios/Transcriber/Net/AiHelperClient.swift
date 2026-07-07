@@ -82,8 +82,8 @@ final class AiHelperClient {
 
     /// 課題・予定の一覧を取得する。includeDone=true で完了済みも含める。
     func fetchTasks(baseUrl: String, email: String, token: String, includeDone: Bool) -> Result<[Task], Error> {
-        let path = "/api/tasks?done=\(includeDone ? "1" : "0")&email=\(enc(email))&token=\(enc(token))"
-        return getJson(baseUrl, path).map { json in
+        let path = "/api/tasks?done=\(includeDone ? "1" : "0")"
+        return getJson(baseUrl, path, email: email, token: token).map { json in
             let arr = json["tasks"] as? [[String: Any]] ?? []
             return arr.map { o in
                 Task(
@@ -101,8 +101,8 @@ final class AiHelperClient {
 
     /// サーバーに保存された時間割を取得する。
     func fetchCourses(baseUrl: String, email: String, token: String) -> Result<[Course], Error> {
-        let path = "/api/courses?email=\(enc(email))&token=\(enc(token))"
-        return getJson(baseUrl, path).map { json in
+        let path = "/api/courses"
+        return getJson(baseUrl, path, email: email, token: token).map { json in
             let arr = json["courses"] as? [[String: Any]] ?? []
             return arr.map { o in
                 Course(
@@ -121,8 +121,8 @@ final class AiHelperClient {
 
     /// サーバーに保存済みの文字起こし一覧を取得する。
     func fetchServerTranscripts(baseUrl: String, email: String, token: String, limit: Int = 100) -> Result<[ServerTranscript], Error> {
-        let path = "/api/transcripts?limit=\(limit)&email=\(enc(email))&token=\(enc(token))"
-        return getJson(baseUrl, path).map { json in
+        let path = "/api/transcripts?limit=\(limit)"
+        return getJson(baseUrl, path, email: email, token: token).map { json in
             let arr = json["transcripts"] as? [[String: Any]] ?? []
             return arr.map { o in
                 ServerTranscript(
@@ -138,8 +138,8 @@ final class AiHelperClient {
 
     /// サーバーに保存済みの文字起こし本文を取得する。
     func fetchServerTranscript(baseUrl: String, email: String, token: String, id: Int64) -> Result<ServerTranscriptDetail, Error> {
-        let path = "/api/transcripts/\(id)?email=\(enc(email))&token=\(enc(token))"
-        return getJson(baseUrl, path).flatMap { json in
+        let path = "/api/transcripts/\(id)"
+        return getJson(baseUrl, path, email: email, token: token).flatMap { json in
             guard let o = json["transcript"] as? [String: Any] else {
                 return .failure(ClientError(message: "本文取得に失敗しました"))
             }
@@ -156,13 +156,13 @@ final class AiHelperClient {
 
     /// 今日の要約を取得する（未生成なら空文字）。
     func fetchSummary(baseUrl: String, email: String, token: String) -> Result<String, Error> {
-        getJson(baseUrl, "/api/summary/today?email=\(enc(email))&token=\(enc(token))")
+        getJson(baseUrl, "/api/summary/today", email: email, token: token)
             .map { str($0["summary"]) }
     }
 
     /// 指定日(yyyy-MM-dd)の要約を取得する（未生成なら空文字）。
     func fetchDaySummary(baseUrl: String, email: String, token: String, day: String) -> Result<String, Error> {
-        getJson(baseUrl, "/api/summary/\(day)?email=\(enc(email))&token=\(enc(token))")
+        getJson(baseUrl, "/api/summary/\(day)", email: email, token: token)
             .map { str($0["summary"]) }
     }
 
@@ -193,15 +193,14 @@ final class AiHelperClient {
 
     /// 課題・予定を削除する。
     func deleteTask(baseUrl: String, email: String, token: String, id: Int64) -> OpResult {
-        let path = "/api/tasks/\(id)?email=\(enc(email))&token=\(enc(token))"
-        return opResult(requestJson(baseUrl, path, method: "DELETE", body: nil), onOk: "削除しました")
+        return opResult(requestJson(baseUrl, "/api/tasks/\(id)", method: "DELETE", body: nil, email: email, token: token), onOk: "削除しました")
     }
 
     // MARK: - Moodle / STT / Waseda / Google
 
     /// Moodle の iCal URL を取得する。
     func fetchMoodleUrl(baseUrl: String, email: String, token: String) -> Result<String, Error> {
-        getJson(baseUrl, "/api/moodle?email=\(enc(email))&token=\(enc(token))").map { str($0["url"]) }
+        getJson(baseUrl, "/api/moodle", email: email, token: token).map { str($0["url"]) }
     }
 
     /// Moodle の iCal URL を保存する。
@@ -212,7 +211,7 @@ final class AiHelperClient {
 
     /// 音声認識クオリティ（"light"/"standard"/"high"）を取得する。
     func fetchSttQuality(baseUrl: String, email: String, token: String) -> Result<String, Error> {
-        getJson(baseUrl, "/api/stt-quality?email=\(enc(email))&token=\(enc(token))")
+        getJson(baseUrl, "/api/stt-quality", email: email, token: token)
             .map { let q = str($0["quality"]); return q.isEmpty ? "high" : q }
     }
 
@@ -230,7 +229,7 @@ final class AiHelperClient {
 
     /// サーバーに保存済みの Waseda アカウント情報（ID と、パスワード保存の有無）を取得する。
     func fetchWaseda(baseUrl: String, email: String, token: String) -> Result<(String, Bool), Error> {
-        getJson(baseUrl, "/api/waseda?email=\(enc(email))&token=\(enc(token))")
+        getJson(baseUrl, "/api/waseda", email: email, token: token)
             .map { (str($0["wasedaUser"]), $0["hasPassword"] as? Bool ?? false) }
     }
 
@@ -250,7 +249,7 @@ final class AiHelperClient {
 
     /// Waseda 取り込みの進行状況。state は idle / running / done / error。
     func fetchWasedaSyncStatus(baseUrl: String, email: String, token: String) -> Result<(String, String), Error> {
-        getJson(baseUrl, "/api/waseda/sync/status?email=\(enc(email))&token=\(enc(token))")
+        getJson(baseUrl, "/api/waseda/sync/status", email: email, token: token)
             .map { (str($0["state"]).isEmpty ? "idle" : str($0["state"]), str($0["message"])) }
     }
 
@@ -377,7 +376,7 @@ final class AiHelperClient {
 
     /// サーバーに保存された秘書チャット履歴を取得する。
     func fetchChatHistory(baseUrl: String, email: String, token: String) -> Result<[ChatHistoryMessage], Error> {
-        getJson(baseUrl, "/api/chat/history?email=\(enc(email))&token=\(enc(token))").map { json in
+        getJson(baseUrl, "/api/chat/history", email: email, token: token).map { json in
             let arr = json["messages"] as? [[String: Any]] ?? []
             return arr.map {
                 ChatHistoryMessage(role: str($0["role"]), content: str($0["content"]), createdAt: str($0["created_at"]))
@@ -387,10 +386,12 @@ final class AiHelperClient {
 
     /// 未取得のリマインドを取得する。ローカル通知として表示したら ackReminders で既読化する。
     func fetchReminders(baseUrl: String, email: String, token: String) -> [Reminder] {
-        guard let url = endpoint(baseUrl, "/api/reminders?email=\(enc(email))&token=\(enc(token))") else { return [] }
+        guard let url = endpoint(baseUrl, "/api/reminders") else { return [] }
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(email, forHTTPHeaderField: "X-Account-Email")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (code, data, error) = sync(request)
         guard error == nil, (200...299).contains(code), let json = parse(data) else { return [] }
         let arr = json["reminders"] as? [[String: Any]] ?? []
@@ -432,6 +433,10 @@ final class AiHelperClient {
         requestJson(baseUrl, path, method: "GET", body: nil)
     }
 
+    private func getJson(_ baseUrl: String, _ path: String, email: String, token: String) -> Result<[String: Any], Error> {
+        requestJson(baseUrl, path, method: "GET", body: nil, email: email, token: token)
+    }
+
     private func postJson(_ baseUrl: String, _ path: String, body: [String: Any]) -> Result<[String: Any], Error> {
         requestJson(baseUrl, path, method: "POST", body: body)
     }
@@ -439,6 +444,11 @@ final class AiHelperClient {
     /// JSON リクエストを送り、`{"ok": true, ...}` の本文を返す。ok でなければ error メッセージを投げる。
     private func requestJson(_ baseUrl: String, _ path: String, method: String,
                              body: [String: Any]?) -> Result<[String: Any], Error> {
+        requestJson(baseUrl, path, method: method, body: body, email: nil, token: nil)
+    }
+
+    private func requestJson(_ baseUrl: String, _ path: String, method: String,
+                             body: [String: Any]?, email: String?, token: String?) -> Result<[String: Any], Error> {
         guard let url = endpoint(baseUrl, path) else {
             return .failure(ClientError(message: "URL が不正です"))
         }
@@ -446,6 +456,10 @@ final class AiHelperClient {
         request.httpMethod = method
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let email, let token {
+            request.setValue(email, forHTTPHeaderField: "X-Account-Email")
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -481,9 +495,6 @@ final class AiHelperClient {
         return "サーバーエラー (HTTP \(code))"
     }
 
-    private func enc(_ s: String) -> String {
-        s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? s
-    }
 }
 
 // JSON の値取り出しヘルパー（org.json の optString/optLong 相当）。

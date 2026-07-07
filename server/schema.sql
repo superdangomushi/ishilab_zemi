@@ -74,12 +74,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   KEY idx_email_created (email, created_at)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
--- Web から自己登録したユーザー。パスワードは sha256(salt + password) で保存（平文は持たない）。
+-- Web から自己登録したユーザー。パスワードは scrypt で保存（平文は持たない）。
 CREATE TABLE IF NOT EXISTS users (
   id            INT AUTO_INCREMENT PRIMARY KEY,
   email         VARCHAR(255) NOT NULL,
   salt          CHAR(32)     NOT NULL,
-  password_hash CHAR(64)     NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
   token         CHAR(48)     NOT NULL,
   moodle_ical_url VARCHAR(1024) NULL,
   google_email  VARCHAR(255) NULL,

@@ -78,8 +78,7 @@ class AiHelperClient {
     fun fetchTasks(
         baseUrl: String, email: String, token: String, includeDone: Boolean,
     ): kotlin.Result<List<Task>> {
-        val path = "/api/tasks?done=${if (includeDone) "1" else "0"}" +
-            "&email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/tasks?done=${if (includeDone) "1" else "0"}"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -87,6 +86,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -112,7 +112,7 @@ class AiHelperClient {
 
     /** サーバーに保存された時間割を取得する。 */
     fun fetchCourses(baseUrl: String, email: String, token: String): kotlin.Result<List<Course>> {
-        val path = "/api/courses?email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/courses"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -120,6 +120,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -148,7 +149,7 @@ class AiHelperClient {
     fun fetchServerTranscripts(
         baseUrl: String, email: String, token: String, limit: Int = 100,
     ): kotlin.Result<List<ServerTranscript>> {
-        val path = "/api/transcripts?limit=$limit&email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/transcripts?limit=$limit"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -156,6 +157,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -181,7 +183,7 @@ class AiHelperClient {
     fun fetchServerTranscript(
         baseUrl: String, email: String, token: String, id: Long,
     ): kotlin.Result<ServerTranscriptDetail> {
-        val path = "/api/transcripts/$id?email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/transcripts/$id"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -189,6 +191,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -210,7 +213,7 @@ class AiHelperClient {
 
     /** 今日の要約を取得する（未生成なら空文字）。 */
     fun fetchSummary(baseUrl: String, email: String, token: String): kotlin.Result<String> {
-        val path = "/api/summary/today?email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/summary/today"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -218,6 +221,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -231,12 +235,13 @@ class AiHelperClient {
 
     /** 指定日(yyyy-MM-dd)の要約を取得する（未生成なら空文字）。 */
     fun fetchDaySummary(baseUrl: String, email: String, token: String, day: String): kotlin.Result<String> {
-        val path = "/api/summary/$day?email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/summary/$day"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -307,13 +312,14 @@ class AiHelperClient {
 
     /** 課題・予定を削除する。 */
     fun deleteTask(baseUrl: String, email: String, token: String, id: Long): Result {
-        val url = endpoint(baseUrl, "/api/tasks/$id?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/tasks/$id")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "DELETE"
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             readResult(conn, onOk = "削除しました")
         }.getOrElse { Result.Error(it.message ?: "削除に失敗しました") }
@@ -321,11 +327,12 @@ class AiHelperClient {
 
     /** Moodle の iCal URL を取得する。 */
     fun fetchMoodleUrl(baseUrl: String, email: String, token: String): kotlin.Result<String> {
-        val url = endpoint(baseUrl, "/api/moodle?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/moodle")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -347,11 +354,12 @@ class AiHelperClient {
 
     /** 音声認識クオリティ（"light"/"standard"/"high"）を取得する。 */
     fun fetchSttQuality(baseUrl: String, email: String, token: String): kotlin.Result<String> {
-        val url = endpoint(baseUrl, "/api/stt-quality?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/stt-quality")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -387,11 +395,12 @@ class AiHelperClient {
 
     /** サーバーに保存済みの Waseda アカウント情報（ID と、パスワード保存の有無）を取得する。 */
     fun fetchWaseda(baseUrl: String, email: String, token: String): kotlin.Result<Pair<String, Boolean>> {
-        val url = endpoint(baseUrl, "/api/waseda?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/waseda")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -432,11 +441,12 @@ class AiHelperClient {
 
     /** Waseda 取り込みの進行状況。state は idle / running / done / error。 */
     fun fetchWasedaSyncStatus(baseUrl: String, email: String, token: String): kotlin.Result<Pair<String, String>> {
-        val url = endpoint(baseUrl, "/api/waseda/sync/status?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/waseda/sync/status")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -615,7 +625,7 @@ class AiHelperClient {
 
     /** サーバーに保存された秘書チャット履歴を取得する。 */
     fun fetchChatHistory(baseUrl: String, email: String, token: String): kotlin.Result<List<ChatHistoryMessage>> {
-        val path = "/api/chat/history?email=${enc(email)}&token=${enc(token)}"
+        val path = "/api/chat/history"
         val url = endpoint(baseUrl, path)
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -623,6 +633,7 @@ class AiHelperClient {
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             val json = JSONObject(text)
@@ -644,13 +655,14 @@ class AiHelperClient {
 
     /** 未取得のリマインドを取得する。ローカル通知として表示したら ackReminders で既読化する。 */
     fun fetchReminders(baseUrl: String, email: String, token: String): List<Reminder> {
-        val url = endpoint(baseUrl, "/api/reminders?email=${enc(email)}&token=${enc(token)}")
+        val url = endpoint(baseUrl, "/api/reminders")
         return runCatching {
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
                 connectTimeout = 15_000
                 readTimeout = 20_000
                 setRequestProperty("Accept", "application/json")
+                setAuth(email, token)
             }
             val (code, text) = readBody(conn)
             if (code !in 200..299) return@runCatching emptyList<Reminder>()
@@ -686,6 +698,11 @@ class AiHelperClient {
             setRequestProperty("Accept", "application/json")
         }
 
+    private fun HttpURLConnection.setAuth(email: String, token: String) {
+        setRequestProperty("X-Account-Email", email)
+        setRequestProperty("Authorization", "Bearer $token")
+    }
+
     private fun readResult(conn: HttpURLConnection, onOk: String): Result {
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
@@ -706,9 +723,6 @@ class AiHelperClient {
         conn.disconnect()
         return code to text
     }
-
-    private fun enc(s: String): String =
-        java.net.URLEncoder.encode(s, "UTF-8")
 
     private fun endpoint(baseUrl: String, path: String): URL =
         URL(baseUrl.trimEnd('/') + path)

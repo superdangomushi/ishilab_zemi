@@ -93,13 +93,13 @@ async function ensureSchema() {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
 
-  // Web から自己登録したユーザー（メール＋パスワード）。パスワードは sha256(salt+password) で保存。
+  // Web から自己登録したユーザー（メール＋パスワード）。パスワードは scrypt で保存。
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id            INT AUTO_INCREMENT PRIMARY KEY,
       email         VARCHAR(255) NOT NULL,
       salt          CHAR(32)     NOT NULL,
-      password_hash CHAR(64)     NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
       token         CHAR(48)     NOT NULL,
       created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uq_users_email (email),
@@ -112,6 +112,7 @@ async function ensureSchema() {
   await addColumnIfMissing("transcripts", "yotei_json", "LONGTEXT NULL");
   await addColumnIfMissing("transcripts", "summary", "TEXT NULL");
   await addColumnIfMissing("transcripts", "analyzed_at", "DATETIME NULL");
+  await widenColumnIfNeeded("users", "password_hash", 255, "VARCHAR(255) NOT NULL");
   // 資料ファイル（PDF/TXT等）の AI 要約。
   await pool.query(`
     CREATE TABLE IF NOT EXISTS documents (
@@ -209,6 +210,20 @@ async function addColumnIfMissing(table, column, definition) {
   );
   if (rows[0].n === 0) {
     await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+async function widenColumnIfNeeded(table, column, minLength, definition) {
+  const [rows] = await pool.query(
+    `SELECT CHARACTER_MAXIMUM_LENGTH AS len
+     FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+     LIMIT 1`,
+    [table, column]
+  );
+  const len = Number(rows[0]?.len || 0);
+  if (len > 0 && len < minLength) {
+    await pool.query(`ALTER TABLE ${table} MODIFY COLUMN ${column} ${definition}`);
   }
 }
 
