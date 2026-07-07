@@ -1124,8 +1124,11 @@ app.post("/api/audio/worker/claim", async (req, res) => {
     };
     if (!worker.allowed) return res.json({ ...base, job: null });
     // global モードのPCは全ユーザーのジョブを処理対象にする（そのPCの利用を
-    // 断っているユーザーのジョブは claim 時に除外される）。
-    const job = await audio.claimRemoteJob(account.email, worker.id, { global: worker.mode === "global" });
+    // 断っているユーザーのジョブは claim 時に除外される）。ただしリクエスト自体が
+    // global を申告している場合に限る: 旧クライアント（ヘッダー無し）は他ユーザーの
+    // ジョブをダウンロードできず滞留させてしまうため、常に本人のジョブだけを渡す。
+    const global = worker.mode === "global" && workerModeFromReq(req) === "global";
+    const job = await audio.claimRemoteJob(account.email, worker.id, { global });
     if (!job) return res.json({ ...base, job: null });
     res.json({
       ...base,

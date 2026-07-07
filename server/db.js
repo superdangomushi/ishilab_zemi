@@ -863,11 +863,13 @@ async function getClaimedAudioJob(email, id, workerId = null) {
     if (workerId && job.claimed_by && Number(job.claimed_by) !== Number(workerId)) return null;
     return job;
   }
-  // 他ユーザーのジョブ: 認証アカウント所有の global ワーカーが自分で claim した
-  // ジョブに限って許可する（ワーカーIDを送らない旧クライアントは常に不可）。
+  // 他ユーザーのジョブ: 認証アカウント所有のワーカーが自分で claim したジョブに
+  // 限って許可する（ワーカーIDを送らない旧クライアントは常に不可）。他ユーザーの
+  // ジョブの claim は global モードでしか起きないため、処理中に private へ切り替えて
+  // も確保済みジョブの結果は受け取れるよう、現在の mode はあえて見ない。
   if (!workerId || Number(job.claimed_by) !== Number(workerId)) return null;
   const [w] = await pool.query(
-    `SELECT id FROM audio_workers WHERE id = ? AND email = ? AND mode = 'global' LIMIT 1`,
+    `SELECT id FROM audio_workers WHERE id = ? AND email = ? LIMIT 1`,
     [Number(workerId), email]
   );
   if (!w[0]) return null;
