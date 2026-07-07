@@ -19,7 +19,7 @@ class AiHelperClient {
         data class Error(val message: String) : Result
     }
 
-    /** 秘書チャットの応答。reply は表示文、applied は実行された操作の件数。 */
+    /** AIチャットの応答。reply は表示文、applied は実行された操作の件数。 */
     data class AskResult(val reply: String, val applied: Int)
 
     /** サーバーから取得したリマインド（端末でローカル通知として出す）。 */
@@ -67,7 +67,7 @@ class AiHelperClient {
         val analyzed: Boolean,
     )
 
-    /** サーバーに保存された秘書チャット履歴。role は "user" / "assistant"。 */
+    /** サーバーに保存されたAIチャット履歴。role は "user" / "assistant"。 */
     data class ChatHistoryMessage(
         val role: String,
         val content: String,
@@ -593,7 +593,7 @@ class AiHelperClient {
     }
 
     /**
-     * 秘書チャット。質問への回答や、「予定入れといて」等の依頼の実行をサーバー（Gemini）に任せる。
+     * AIチャット。質問への回答や、「予定入れといて」等の依頼の実行をサーバー（Gemini）に任せる。
      * 成功すると回答文と実行件数を返す。
      */
     fun ask(
@@ -623,7 +623,7 @@ class AiHelperClient {
         }
     }
 
-    /** サーバーに保存された秘書チャット履歴を取得する。 */
+    /** サーバーに保存されたAIチャット履歴を取得する。 */
     fun fetchChatHistory(baseUrl: String, email: String, token: String): kotlin.Result<List<ChatHistoryMessage>> {
         val path = "/api/chat/history"
         val url = endpoint(baseUrl, path)

@@ -3,7 +3,7 @@
 文字起こしアプリから送られてくるテキストを受け取り **MySQL に保存**し、
 **Gemini** で「課題」「予定」「要約」を抽出する。締切が近づくと **LINE** と
 **端末ローカル通知**で警告し、その日の出来事を**日次要約**にまとめ、
-**秘書チャット**で質問応答・予定登録までこなす。ブラウザ（`/`）がダッシュボード。
+**AIチャット**で質問応答・予定登録までこなす。ブラウザ（`/`）がダッシュボード。
 
 ## できること
 
@@ -12,7 +12,7 @@
 - Gemini による課題・予定の抽出（締切付き）と、このアップロード分の短い要約
 - 締切の **1日前 / 1時間前** リマインド（LINE push ＋ 端末通知用に記録、冪等）
 - **日次要約**（その日の文字起こしから「今日何があったか」を生成）
-- **秘書チャット**（`POST /api/ask`）— 質問に回答し、依頼（予定追加・完了化）を実行
+- **AIチャット**（`POST /api/ask`）— 質問に回答し、依頼（予定追加・完了化）を実行
 - ダッシュボード（締切カウントダウン・タスク管理・今日の要約・チャット）
 
 ## セットアップ
@@ -55,7 +55,7 @@ npm start          # http://localhost:3000
 | `DB_PASSWORD` | （空） | パスワード |
 | `DB_NAME` | `AIHelper` | データベース名 |
 | `PORT` | `3000` | サーバーの待受ポート |
-| `GEMINI_API_KEY` | （空） | Gemini の API キー。未設定なら抽出・要約・秘書チャットは無効 |
+| `GEMINI_API_KEY` | （空） | Gemini の API キー。未設定なら抽出・要約・AIチャットは無効 |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | 使用する Gemini モデル |
 | `LINE_CHANNEL_ACCESS_TOKEN` | （空） | LINE Messaging API のチャネルアクセストークン。未設定なら LINE 送信はスキップ |
 | `REMINDER_INTERVAL_SEC` | `60` | 締切チェックの間隔（秒） |
@@ -148,8 +148,8 @@ npm start
 | POST | `/api/audio/worker/jobs/:id/result` | 外部PCワーカーが文字起こし結果またはエラーを返す |
 | GET | `/api/transcripts` | ログイン中ユーザーの文字起こし一覧 |
 | GET | `/api/transcripts/:id` | ログイン中ユーザーの文字起こし本文 |
-| POST | `/api/ask` | 秘書チャット。回答＋依頼（予定追加・完了化）の実行 |
-| GET | `/api/chat/history` | 秘書チャット履歴 |
+| POST | `/api/ask` | AIチャット。回答＋依頼（予定追加・完了化）の実行 |
+| GET | `/api/chat/history` | AIチャット履歴 |
 | GET | `/api/tasks` | 課題・予定の一覧（`?done=1` で完了も含む） |
 | POST | `/api/tasks` | タスクを手動追加（`type, content, details, deadline`） |
 | POST | `/api/tasks/:id/done` | 完了/未完了の切替（`{status}`） |
@@ -212,5 +212,5 @@ curl -X POST http://localhost:3000/api/upload \
   --data-binary '来週月曜までにレポート提出。水曜15時から研究会議です。'
 
 # ブラウザで http://localhost:3000/ を開き、ログイン情報を入れると
-# 締切カウントダウン・今日の要約・タスク・秘書チャットが使える
+# 締切カウントダウン・今日の要約・タスク・AIチャットが使える
 ```

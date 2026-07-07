@@ -5,7 +5,7 @@
 //  - Gemini で「課題」「予定」を抽出し、締切付きタスクとして正規化保存
 //  - 締切の「1日前」「1時間前」に LINE で警告（+ 端末ローカル通知用に記録）
 //  - その日の文字起こしから「今日の要約」を日付ごとに生成
-//  - 秘書チャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行
+//  - AIチャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行
 //  - ダッシュボード（ / ）で締切・要約・タスク・チャットを操作
 
 const express = require("express");
@@ -1139,7 +1139,7 @@ app.get("/api/transcripts/:id", async (req, res) => {
 });
 
 // =====================================================================
-// 秘書チャット
+// AIチャット
 // =====================================================================
 
 // POST /api/ask  body: { email, token, question }
@@ -1734,7 +1734,7 @@ function renderDashboard() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AIHelper — あなたの秘書</title>
+  <title>AIHelper — あなたのAIアシスタント</title>
   <style>
     :root {
       --accent:#4f46e5; --accent-2:#6366f1; --ink:#0f172a; --muted:#64748b;
@@ -1829,7 +1829,7 @@ function renderDashboard() {
 <body>
   <header>
     <div class="wrap">
-      <h1>AIHelper — あなたの秘書</h1>
+      <h1>AIHelper — あなたのAIアシスタント</h1>
       <p>常時録音から課題・予定を拾い、締切前に通知。聞けば答え、頼めば登録します。</p>
     </div>
   </header>
@@ -1860,7 +1860,7 @@ function renderDashboard() {
     <!-- アプリ本体: ログイン後にタブ表示 -->
     <div id="app" style="display:none">
       <nav class="tabs">
-        <button class="tab" data-tab="chat" onclick="showTab('chat')">秘書</button>
+        <button class="tab" data-tab="chat" onclick="showTab('chat')">チャット</button>
         <button class="tab" data-tab="tasks" onclick="showTab('tasks')">予定・課題</button>
         <button class="tab" data-tab="calendar" onclick="showTab('calendar')">カレンダー</button>
         <button class="tab" data-tab="summary" onclick="showTab('summary')">今日の要約</button>
@@ -1869,7 +1869,7 @@ function renderDashboard() {
       </nav>
 
       <section class="card panel" data-panel="chat">
-        <h2>秘書に聞く / 頼む</h2>
+        <h2>AIに聞く / 頼む</h2>
         <div id="chatlog" class="chatlog"></div>
         <div class="row">
           <input id="q" placeholder="例）今日の予定は？ / 来週月曜10時にゼミ入れといて"

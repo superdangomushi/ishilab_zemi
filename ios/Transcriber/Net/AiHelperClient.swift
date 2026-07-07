@@ -11,7 +11,7 @@ final class AiHelperClient {
         case error(String)
     }
 
-    /// 秘書チャットの応答。reply は表示文、applied は実行された操作の件数。
+    /// AIチャットの応答。reply は表示文、applied は実行された操作の件数。
     struct AskResult {
         let reply: String
         let applied: Int
@@ -66,7 +66,7 @@ final class AiHelperClient {
         let analyzed: Bool
     }
 
-    /// サーバーに保存された秘書チャット履歴。role は "user" / "assistant"。
+    /// サーバーに保存されたAIチャット履歴。role は "user" / "assistant"。
     struct ChatHistoryMessage {
         let role: String
         let content: String
@@ -352,7 +352,7 @@ final class AiHelperClient {
         return data
     }
 
-    // MARK: - カレンダー同期・秘書チャット・リマインド
+    // MARK: - カレンダー同期・AIチャット・リマインド
 
     /// カレンダーの予定をサーバーに同期する。
     func syncCalendar(baseUrl: String, email: String, token: String, events: [CalendarEvent]) -> OpResult {
@@ -363,7 +363,7 @@ final class AiHelperClient {
         return opResult(postJson(baseUrl, "/api/calendar/sync", body: body), onOk: "同期完了")
     }
 
-    /// 秘書チャット。質問への回答や、「予定入れといて」等の依頼の実行をサーバー（Gemini）に任せる。
+    /// AIチャット。質問への回答や、「予定入れといて」等の依頼の実行をサーバー（Gemini）に任せる。
     /// 成功すると回答文と実行件数を返す。
     func ask(baseUrl: String, email: String, token: String, question: String,
              calendar: [(String, String)] = []) -> Result<AskResult, Error> {
@@ -374,7 +374,7 @@ final class AiHelperClient {
         }
     }
 
-    /// サーバーに保存された秘書チャット履歴を取得する。
+    /// サーバーに保存されたAIチャット履歴を取得する。
     func fetchChatHistory(baseUrl: String, email: String, token: String) -> Result<[ChatHistoryMessage], Error> {
         getJson(baseUrl, "/api/chat/history", email: email, token: token).map { json in
             let arr = json["messages"] as? [[String: Any]] ?? []

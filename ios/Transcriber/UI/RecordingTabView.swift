@@ -125,7 +125,7 @@ struct TranscribeModeCard: View {
                     Text("サーバーで処理（音声をアップロード）")
                     Text(viewModel.ui.account.loggedIn
                          ? "録音区間の音声をサーバーへ送り、サーバー側で文字起こし。処理状況はダッシュボードで確認できます。"
-                         : "利用するには先に「秘書」タブで AIHelper にログインしてください。")
+                         : "利用するには先に「AI」タブで AIHelper にログインしてください。")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }

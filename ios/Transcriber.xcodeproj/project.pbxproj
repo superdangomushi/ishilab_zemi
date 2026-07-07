@@ -25,7 +25,7 @@
 		7185882E66795576E576A3E6 /* ggml-cpu-quants.c in Sources */ = {isa = PBXBuildFile; fileRef = 299E13ACA6C575DFBB5BFC74 /* ggml-cpu-quants.c */; };
 		79FD76CCB6A5055CB62D8480 /* CourseSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E3241D4824C2B31D7D30A1 /* CourseSchedule.swift */; };
 		7A0F3FB8A4347ED6F2EEDD4B /* ggml-backend-reg.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 46FCAF56F63C283C814415B3 /* ggml-backend-reg.cpp */; };
-		7D573116FFDCACFCA8E655C5 /* SecretaryTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */; };
+		7D573116FFDCACFCA8E655C5 /* AiTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CB1AB6EF6955DDC1F138211 /* AiTabView.swift */; };
 		938E60E9340278858548ACAD /* PcmSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EC3D1FC54881B56E9CA58E8 /* PcmSegment.swift */; };
 		95A9ED4E6A7A4814DB1A369D /* CalendarTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA0761BE4C8A7D1448AAEAF4 /* CalendarTabView.swift */; };
 		9BEE1E653C12F391D4063895 /* ggml-cpu.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8E9558A3C902AD80CAFBA11 /* ggml-cpu.cpp */; };
@@ -74,7 +74,7 @@
 		8B66461C3B930A2CE068FF6C /* ggml-backend.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-backend.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-backend.cpp"; sourceTree = "<group>"; };
 		8C0C85A863FD9CF63357B06D /* ggml-cpu-hbm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = "ggml-cpu-hbm.cpp"; path = "../app/src/main/cpp/whisper.cpp/ggml/src/ggml-cpu/ggml-cpu-hbm.cpp"; sourceTree = "<group>"; };
 		91CABDD38BCA36F5221F8264 /* TaskEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskEditView.swift; sourceTree = "<group>"; };
-		9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTabView.swift; sourceTree = "<group>"; };
+		9CB1AB6EF6955DDC1F138211 /* AiTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiTabView.swift; sourceTree = "<group>"; };
 		A24D4A5DE1885EB0BCF93EEC /* GoogleCalendarClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleCalendarClient.swift; sourceTree = "<group>"; };
 		A26393F7F88F37EF277B2BA9 /* MainViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewModel.swift; sourceTree = "<group>"; };
 		A4E3241D4824C2B31D7D30A1 /* CourseSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CourseSchedule.swift; sourceTree = "<group>"; };
@@ -120,7 +120,7 @@
 				0DFB6ABAF09577670F049C71 /* RecordingTabView.swift */,
 				5A2A124673BA8526461653DD /* RecordsTabView.swift */,
 				E5CEFA86A26167BFBD95DE16 /* ReminderAlertView.swift */,
-				9CB1AB6EF6955DDC1F138211 /* SecretaryTabView.swift */,
+				9CB1AB6EF6955DDC1F138211 /* AiTabView.swift */,
 				91CABDD38BCA36F5221F8264 /* TaskEditView.swift */,
 			);
 			path = UI;
@@ -304,7 +304,7 @@
 				59CB3A40CF5C3297B16FBC4E /* RecordsTabView.swift in Sources */,
 				C7C4151712B1D73015536E00 /* ReminderAlertView.swift in Sources */,
 				A3046122E2390DFE235EFD21 /* ReminderNotifier.swift in Sources */,
-				7D573116FFDCACFCA8E655C5 /* SecretaryTabView.swift in Sources */,
+				7D573116FFDCACFCA8E655C5 /* AiTabView.swift in Sources */,
 				325CD021D9AB7DE6A83AAE39 /* TaskEditView.swift in Sources */,
 				CB2505914211968414C2D092 /* TranscriberApp.swift in Sources */,
 				2E19549CC4F79AE3FA4274CE /* TranscriptStore.swift in Sources */,

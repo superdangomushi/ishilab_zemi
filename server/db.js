@@ -67,7 +67,7 @@ async function ensureSchema() {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
 
-  // チャット（秘書）の会話履歴。同じアカウントでの継続的な文脈維持に使う。
+  // AIチャットの会話履歴。同じアカウントでの継続的な文脈維持に使う。
   await pool.query(`
     CREATE TABLE IF NOT EXISTS chat_messages (
       id         INT AUTO_INCREMENT PRIMARY KEY,
@@ -990,7 +990,7 @@ async function listCalendarEvents(email) {
 }
 
 // =====================================================================
-// チャット履歴（秘書との会話。ChatGPT のような継続した文脈維持に使う）
+// チャット履歴（AIとの会話。ChatGPT のような継続した文脈維持に使う）
 // =====================================================================
 
 async function addChatMessage(email, role, content) {

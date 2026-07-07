@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// どのタブからでも呼び出せる秘書チャット（Android の AssistantChatDialog 相当）。
+/// どのタブからでも呼び出せるAIチャット（Android の AssistantChatDialog 相当）。
 struct AssistantChatView: View {
     @EnvironmentObject var viewModel: MainViewModel
     @Environment(\.dismiss) private var dismiss
@@ -8,11 +8,11 @@ struct AssistantChatView: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack {
-                Text("AI秘書").font(.headline)
+                Text("AIチャット").font(.headline)
                 Spacer()
                 Button("閉じる") { dismiss() }
             }
-            SecretaryChatPanel(expandMessages: true)
+            AiChatPanel(expandMessages: true)
         }
         .padding(16)
         .onAppear {
@@ -21,8 +21,8 @@ struct AssistantChatView: View {
     }
 }
 
-/// 秘書チャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。
-struct SecretaryChatPanel: View {
+/// AIチャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。
+struct AiChatPanel: View {
     @EnvironmentObject var viewModel: MainViewModel
     var expandMessages = false
     @State private var question = ""

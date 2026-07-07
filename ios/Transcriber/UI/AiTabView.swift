@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// AIHelper 連携（ログイン）・予定/課題の確認・秘書チャットをまとめたタブ。
-struct SecretaryTabView: View {
+/// AIHelper 連携（ログイン）・予定/課題の確認・AIチャットをまとめたタブ。
+struct AiTabView: View {
     @EnvironmentObject var viewModel: MainViewModel
 
     var body: some View {
@@ -13,7 +13,7 @@ struct SecretaryTabView: View {
                 GoogleCalendarCard()
 
                 if !viewModel.ui.account.loggedIn {
-                    Text("AIHelper にログインすると、Moodle 連携や予定・課題の確認、秘書チャットが使えます。")
+                    Text("AIHelper にログインすると、Moodle 連携や予定・課題の確認、AIチャットが使えます。")
                         .font(.caption)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -61,10 +61,10 @@ struct SecretaryTabView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    // ---- 秘書チャット ----
+                    // ---- AIチャット ----
                     CardView {
-                        Text("秘書に聞く / 頼む").font(.headline)
-                        SecretaryChatPanel(expandMessages: false)
+                        Text("AIに聞く / 頼む").font(.headline)
+                        AiChatPanel(expandMessages: false)
                     }
                 }
             }

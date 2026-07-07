@@ -261,13 +261,13 @@ private fun MainScreen(
                     Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("録音") })
                     Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("記録") })
                     Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("予定") })
-                    Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("秘書") })
+                    Tab(selected = tab == 3, onClick = { tab = 3 }, text = { Text("AI") })
                 }
                 when (tab) {
                     0 -> RecordingTab(ui, service, onDownload, onSelectModel, onSetServerTranscribe, onStart, onStop)
                     1 -> RecordsTab(ui, onRefresh, onSend, onLoadServerTranscripts, onLoadServerTranscript)
                     2 -> CalendarTab(ui, onUpdateTask, onDeleteTask, onLoadDaySummary)
-                    else -> SecretaryTab(
+                    else -> AiTab(
                         ui, onLogin, onRegister, onLogout, onAsk, onLoadTasks, onToggleTask,
                         onUpdateTask, onDeleteTask, onSetShowDone, onLoadSummary, onGenerateSummary,
                         onConnectGoogle, onDisconnectGoogle, onSetDefaultGoogle, onLoadCalendar, onAddToCalendar,
@@ -885,9 +885,9 @@ private fun CalendarTab(
     }
 }
 
-/** AIHelper 連携（ログイン）・予定/課題の確認・秘書チャットをまとめたタブ。 */
+/** AIHelper 連携（ログイン）・予定/課題の確認・AIチャットをまとめたタブ。 */
 @Composable
-private fun SecretaryTab(
+private fun AiTab(
     ui: UiState,
     onLogin: (String, String, String) -> Unit,
     onRegister: (String, String, String) -> Unit,
@@ -927,7 +927,7 @@ private fun SecretaryTab(
         if (!ui.account.loggedIn) {
             item {
                 Text(
-                    "AIHelper にログインすると、Moodle 連携や予定・課題の確認、秘書チャットが使えます。",
+                    "AIHelper にログインすると、Moodle 連携や予定・課題の確認、AIチャットが使えます。",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -988,8 +988,8 @@ private fun SecretaryTab(
             item { Text(msg, style = MaterialTheme.typography.bodySmall) }
         }
 
-        // ---- 秘書チャット ----
-        item { SecretaryCard(ui, onAsk) }
+        // ---- AIチャット ----
+        item { AiChatCard(ui, onAsk) }
     }
 }
 
@@ -1552,7 +1552,7 @@ private fun TranscribeModeCard(ui: UiState, onSetServerTranscribe: (Boolean) -> 
                     Text(
                         if (ui.account.loggedIn)
                             "録音区間の音声をサーバーへ送り、サーバー側で文字起こし。処理状況はダッシュボードで確認できます。"
-                        else "利用するには先に「秘書」タブで AIHelper にログインしてください。",
+                        else "利用するには先に「AI」タブで AIHelper にログインしてください。",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -1760,7 +1760,7 @@ private fun AiHelperLoginForm(
     }
 }
 
-/** どのタブからでも呼び出せる秘書チャット。 */
+/** どのタブからでも呼び出せるAIチャット。 */
 @Composable
 private fun AssistantChatDialog(
     ui: UiState,
@@ -1790,10 +1790,10 @@ private fun AssistantChatDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("AI秘書", style = MaterialTheme.typography.titleMedium)
+                    Text("AIチャット", style = MaterialTheme.typography.titleMedium)
                     TextButton(onClick = onDismiss) { Text("閉じる") }
                 }
-                SecretaryChatPanel(
+                AiChatPanel(
                     ui = ui,
                     onAsk = onAsk,
                     modifier = Modifier
@@ -1806,13 +1806,13 @@ private fun AssistantChatDialog(
     }
 }
 
-/** 秘書チャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。 */
+/** AIチャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。 */
 @Composable
-private fun SecretaryCard(ui: UiState, onAsk: (String) -> Unit) {
+private fun AiChatCard(ui: UiState, onAsk: (String) -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("秘書に聞く / 頼む", style = MaterialTheme.typography.titleMedium)
-            SecretaryChatPanel(
+            Text("AIに聞く / 頼む", style = MaterialTheme.typography.titleMedium)
+            AiChatPanel(
                 ui = ui,
                 onAsk = onAsk,
                 expandMessages = false
@@ -1822,7 +1822,7 @@ private fun SecretaryCard(ui: UiState, onAsk: (String) -> Unit) {
 }
 
 @Composable
-private fun SecretaryChatPanel(
+private fun AiChatPanel(
     ui: UiState,
     onAsk: (String) -> Unit,
     modifier: Modifier = Modifier,

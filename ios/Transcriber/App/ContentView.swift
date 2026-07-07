@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// メイン画面。上部タブ（録音/記録/予定/秘書）＋右下 AI ボタン＋処理中バッジ。
+/// メイン画面。上部タブ（録音/記録/予定/AI）＋右下 AI ボタン＋処理中バッジ。
 /// （Android 版 MainScreen の移植）
 struct ContentView: View {
     @EnvironmentObject var viewModel: MainViewModel
@@ -17,12 +17,12 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                TabRow(selected: $tab, titles: ["録音", "記録", "予定", "秘書"])
+                TabRow(selected: $tab, titles: ["録音", "記録", "予定", "AI"])
                 switch tab {
                 case 0: RecordingTabView()
                 case 1: RecordsTabView()
                 case 2: CalendarTabView()
-                default: SecretaryTabView()
+                default: AiTabView()
                 }
             }
             .background(AppTheme.background)
@@ -32,7 +32,7 @@ struct ContentView: View {
                 TranscribingBadge(state: service.state)
             }
 
-            // 右下の AI ボタン（どのタブからでも秘書チャットを呼び出せる）。
+            // 右下の AI ボタン（どのタブからでもAIチャットを呼び出せる）。
             VStack {
                 Spacer()
                 HStack {

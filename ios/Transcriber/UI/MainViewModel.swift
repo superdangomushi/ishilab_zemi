@@ -9,7 +9,7 @@ struct TranscriptItem: Identifiable, Equatable {
     let sizeBytes: Int64
 }
 
-/// 秘書チャットの1メッセージ。fromUser=true なら利用者の発話。
+/// AIチャットの1メッセージ。fromUser=true なら利用者の発話。
 struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let text: String
@@ -372,7 +372,7 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    /// サーバーに保存された秘書チャット履歴を取得し、画面上の会話を復元する。
+    /// サーバーに保存されたAIチャット履歴を取得し、画面上の会話を復元する。
     func loadChatHistory() {
         guard accountStore.loggedIn, !ui.chatHistoryLoading else { return }
         ui.chatHistoryLoading = true
@@ -567,7 +567,7 @@ final class MainViewModel: ObservableObject {
         ui.sendMessage = nil
     }
 
-    /// 秘書に質問・依頼する。サーバー(Gemini)が回答し、「予定入れといて」等は登録まで実行する。
+    /// AIに質問・依頼する。サーバー(Gemini)が回答し、「予定入れといて」等は登録まで実行する。
     func ask(_ question: String) {
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         if q.isEmpty || ui.askInProgress { return }
@@ -592,7 +592,7 @@ final class MainViewModel: ObservableObject {
             }
             ui.chatLog.append(ChatMessage(text: reply, fromUser: false))
             ui.askInProgress = false
-            // 秘書が予定・課題を追加/完了した可能性があるので、成功時は必ず一覧を更新。
+            // AIが予定・課題を追加/完了した可能性があるので、成功時は必ず一覧を更新。
             if case .success = result {
                 loadTasks()
             }
