@@ -994,15 +994,102 @@ app.get("/api/audio/jobs", async (req, res) => {
   }
 });
 
+// ワーカーPC（クライアント）のID。サーバーが audio_workers で自動採番し、
+// claim レスポンスで通知する。新クライアントは以後 X-Worker-Id で送り返して
+// くるが、旧クライアントは何も送らないため接続元IPで同一PCを推定する。
+function workerIdFromReq(req) {
+  const n = Number(String(req.get("x-worker-id") || "").trim());
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// 新クライアントが名乗るPC名（ホスト名）。ワーカー一覧の表示名に使う。
+function workerNameFromReq(req) {
+  const raw = String(req.get("x-worker-name") || "").replace(/[^\x20-\x7E]/g, "").trim();
+  return raw ? raw.slice(0, 100) : null;
+}
+
+function clientIpOf(req) {
+  const ip = String(req.ip || req.socket?.remoteAddress || "").trim().slice(0, 64);
+  return ip || null;
+}
+
+// 音声を処理するクライアントPCの一覧。ユーザーはこの中から処理させるPCを
+// 複数選択（allowed の付け外し）できる。
+app.get("/api/audio/workers", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const workers = await db.listAudioWorkers(account.email);
+    res.json({
+      ok: true,
+      workers: workers.map((w) => ({
+        id: w.id,
+        name: w.name,
+        ip: w.ip,
+        allowed: Boolean(w.allowed),
+        lastSeenAt: w.last_seen_at,
+        // ポーリング間隔(既定10秒)より十分長い60秒以内に接続があれば「接続中」。
+        online: Boolean(w.last_seen_at) && Date.now() - new Date(w.last_seen_at).getTime() < 60_000,
+      })),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
+// クライアントPCの設定変更（処理の許可/停止・表示名）。
+app.post("/api/audio/workers/:id", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ ok: false, error: "IDが不正です" });
+  try {
+    const n = await db.updateAudioWorker(account.email, id, {
+      allowed: typeof req.body?.allowed === "boolean" ? req.body.allowed : null,
+      name: typeof req.body?.name === "string" ? req.body.name : null,
+    });
+    if (!n) return res.status(404).json({ ok: false, error: "クライアントが見つかりません" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
+// クライアントPCを一覧から削除する（再接続すると新しいIDで自動登録される）。
+app.delete("/api/audio/workers/:id", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ ok: false, error: "IDが不正です" });
+  try {
+    const n = await db.deleteAudioWorker(account.email, id);
+    if (!n) return res.status(404).json({ ok: false, error: "クライアントが見つかりません" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
 // 外部PCワーカー用: 自分のアカウントの queued 音声ジョブを1件確保する。
+// 接続してきたPCを audio_workers に自動登録し、割り振ったIDをレスポンスで
+// 知らせる。ユーザーが許可したPCにだけジョブを渡す。複数のワーカーPCが
+// 同時にポーリングしても、claim は1件ずつ原子的に確保されるため、
+// 手の空いたPCから順にジョブが分散される。
 app.post("/api/audio/worker/claim", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   try {
-    const job = await audio.claimRemoteJob(account.email);
-    if (!job) return res.json({ ok: true, job: null });
+    const worker = await db.resolveAudioWorker(account.email, {
+      id: workerIdFromReq(req),
+      ip: clientIpOf(req),
+      name: workerNameFromReq(req),
+    });
+    const base = { ok: true, workerId: worker.id, workerName: worker.name, allowed: Boolean(worker.allowed) };
+    if (!worker.allowed) return res.json({ ...base, job: null });
+    const job = await audio.claimRemoteJob(account.email, worker.id);
+    if (!job) return res.json({ ...base, job: null });
     res.json({
-      ok: true,
+      ...base,
       job: {
         ...job,
         downloadPath: `/api/audio/worker/jobs/${job.id}/file`,
@@ -1020,7 +1107,7 @@ app.get("/api/audio/worker/jobs/:id/file", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   try {
-    const job = await audio.getClaimedJob(account.email, req.params.id);
+    const job = await audio.getClaimedJob(account.email, req.params.id, workerIdFromReq(req));
     if (!job) return res.status(404).json({ ok: false, error: "処理中の音声ジョブが見つかりません" });
     const filename = encodeURIComponent(job.filename || `audio-${job.id}.wav`);
     res.setHeader("Content-Type", job.mime || "application/octet-stream");
@@ -1048,7 +1135,7 @@ app.post("/api/audio/worker/jobs/:id/result", async (req, res) => {
     return res.status(400).json({ ok: false, error: "text または error を指定してください" });
   }
   try {
-    const result = await audio.completeRemoteJob(account.email, req.params.id, { text, error });
+    const result = await audio.completeRemoteJob(account.email, req.params.id, { text, error, workerId: workerIdFromReq(req) });
     if (!result.ok) return res.status(result.status || 500).json({ ok: false, error: result.error });
     res.json(result);
   } catch (e) {
@@ -1968,8 +2055,15 @@ function renderDashboard() {
         <h2>音声の文字起こし状況（PCワーカー処理）</h2>
         <p class="muted">端末からアップロードされた音声はサーバーでキュー化され、ローカルPCワーカーが順番に文字起こしします。</p>
         <div class="row" style="margin-bottom:.5rem">
-          <button class="ghost small" onclick="loadAudioJobs()">更新</button>
+          <button class="ghost small" onclick="loadAudioJobs();loadAudioWorkers()">更新</button>
         </div>
+        <h3 style="font-size:.95rem; margin:.2rem 0 .4rem">処理に使うPC（クライアント）</h3>
+        <p class="muted" style="margin:.2rem 0 .5rem">
+          音声を処理させるPCを選べます（複数選択可）。チェックを外したPCには新しいジョブを割り振りません。
+          PCで audio-worker を起動して最初に接続した時に、サーバーがIDを自動で割り振ってここに表示します。
+        </p>
+        <div id="audioWorkers" style="margin-bottom:.8rem"><p class="muted">読み込み中…</p></div>
+        <h3 style="font-size:.95rem; margin:.6rem 0 .4rem">ジョブ一覧</h3>
         <div id="audioJobs"><p class="muted">読み込み中…</p></div>
         <hr>
         <h2>受信した文字起こしファイル</h2>
@@ -2109,7 +2203,7 @@ function renderDashboard() {
         else if(activeTab === 'tasks') { await loadTasks(); await refreshGoogleEvents(false); }
         else if(activeTab === 'calendar') { await loadTasks(); await refreshGoogleEvents(false); }
         else if(activeTab === 'summary') await loadSummary();
-        else if(activeTab === 'files') { await loadDocs(); await loadAudioJobs(); await loadTranscripts(); }
+        else if(activeTab === 'files') { await loadDocs(); await loadAudioWorkers(); await loadAudioJobs(); await loadTranscripts(); }
       } catch(e) {
       } finally {
         autoRefreshBusy = false;
@@ -2362,7 +2456,7 @@ function renderDashboard() {
       if(j.ok){ $('pwState').textContent='✓ 変更しました'; $('curpw').value=$('newpw').value=''; }
       else $('pwState').textContent = '✗ ' + (j.error||'変更失敗');
     }
-    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioJobs(); loadTranscripts(); loadGoogle(); loadChatHistory(); }
+    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioWorkers(); loadAudioJobs(); loadTranscripts(); loadGoogle(); loadChatHistory(); }
 
     // ---- Google カレンダー連携（Web OAuth） ----
     let googleAccounts = [];
@@ -2453,6 +2547,51 @@ function renderDashboard() {
       else alert('カレンダー登録失敗: ' + (j.error||''));
     }
 
+    // ---- 音声ワーカーPC（クライアント）選択 ----
+    async function loadAudioWorkers(){
+      if(!auth.email) return;
+      try {
+        const r = await fetch('/api/audio/workers',{headers:headers()});
+        const j = await r.json();
+        if(!j.ok){ $('audioWorkers').innerHTML='<p class="muted">'+escapeHtml(j.error||'取得失敗')+'</p>'; return; }
+        if(!j.workers.length){
+          $('audioWorkers').innerHTML='<p class="muted">まだクライアントPCが接続していません。PC側で audio-worker を起動すると自動でここに表示されます。</p>';
+          return;
+        }
+        const rows = j.workers.map(w =>
+          '<tr><td><label style="display:flex;align-items:center;gap:.4rem;margin:0;cursor:pointer">'+
+            '<input type="checkbox" '+(w.allowed?'checked':'')+' onchange="setWorkerAllowed('+w.id+',this.checked)">'+
+            '#'+w.id+'</label></td>'+
+          '<td>'+escapeHtml(w.name)+'</td>'+
+          '<td>'+escapeHtml(w.ip||'')+'</td>'+
+          '<td>'+(w.online
+            ? '<span style="color:#117a37">接続中</span>'
+            : '<span class="muted">'+(w.lastSeenAt ? new Date(w.lastSeenAt).toLocaleString('ja-JP') : '未接続')+'</span>')+'</td>'+
+          '<td><span class="row" style="gap:.3rem">'+
+            '<button class="ghost small" onclick="renameWorker('+w.id+')">名前変更</button>'+
+            '<button class="ghost small" onclick="deleteWorker('+w.id+')">削除</button>'+
+          '</span></td></tr>').join('');
+        $('audioWorkers').innerHTML =
+          '<table><thead><tr><th>処理する</th><th>名前</th><th>接続元IP</th><th>最終接続</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+      } catch(e){}
+    }
+    async function setWorkerAllowed(id, allowed){
+      try {
+        await fetch('/api/audio/workers/'+id,{method:'POST',headers:headers(),body:JSON.stringify({allowed})});
+      } finally { loadAudioWorkers(); }
+    }
+    async function renameWorker(id){
+      const name = prompt('このPCの表示名を入力してください');
+      if(!name) return;
+      await fetch('/api/audio/workers/'+id,{method:'POST',headers:headers(),body:JSON.stringify({name})});
+      loadAudioWorkers();
+    }
+    async function deleteWorker(id){
+      if(!confirm('このクライアントを一覧から削除しますか？（同じPCが再接続すると新しいIDで登録されます）')) return;
+      await fetch('/api/audio/workers/'+id,{method:'DELETE',headers:headers()});
+      loadAudioWorkers();
+    }
+
     // ---- 音声ジョブ状況 ----
     const AUDIO_STATUS = { queued:'待機中', processing:'処理中', done:'完了', error:'失敗' };
     async function loadAudioJobs(){
@@ -2467,8 +2606,9 @@ function renderDashboard() {
         const rows = j.jobs.map(a => '<tr><td>'+escapeHtml(a.filename)+'</td>'+
           '<td class="num">'+Math.round((a.size_bytes||0)/1024/1024*10)/10+' MB</td>'+
           '<td>'+(AUDIO_STATUS[a.status]||a.status)+(a.error?'<div class="muted">'+escapeHtml(a.error)+'</div>':'')+'</td>'+
+          '<td>'+(a.worker_name ? escapeHtml(a.worker_name) : (a.claimed_by ? '#'+a.claimed_by : ''))+'</td>'+
           '<td>'+new Date(a.updated_at).toLocaleString('ja-JP')+'</td></tr>').join('');
-        $('audioJobs').innerHTML = '<table><thead><tr><th>ファイル</th><th>サイズ</th><th>状態</th><th>更新</th></tr></thead><tbody>'+rows+'</tbody></table>';
+        $('audioJobs').innerHTML = '<table><thead><tr><th>ファイル</th><th>サイズ</th><th>状態</th><th>処理PC</th><th>更新</th></tr></thead><tbody>'+rows+'</tbody></table>';
         // 未完了ジョブがあれば少し待って自動更新。
         if(j.jobs.some(a => a.status==='queued'||a.status==='processing')) audioJobsTimer = setTimeout(loadAudioJobs, 15000);
       } catch(e){}

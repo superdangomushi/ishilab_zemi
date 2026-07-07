@@ -10,6 +10,7 @@
 
 const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const path = require("path");
 const { Readable } = require("stream");
 const { pipeline } = require("stream/promises");
@@ -77,11 +78,16 @@ function loadConfig() {
 }
 
 function normalizeAccount(raw) {
+  // workerId はサーバーがこのPCに割り振ったID（claim のレスポンスで通知される）。
+  // 保存しておき、次回以降 X-Worker-Id で送り返して同一PCだと名乗る。
+  const workerId = Number(raw?.workerId);
   return {
     email: String(raw?.email || "").trim(),
     token: String(raw?.token || "").trim(),
     enabled: raw?.enabled !== false,
     source: raw?.source || "ui",
+    workerId: Number.isInteger(workerId) && workerId > 0 ? workerId : null,
+    workerName: String(raw?.workerName || "").trim() || null,
     addedAt: raw?.addedAt || nowIso(),
     updatedAt: raw?.updatedAt || nowIso(),
   };
@@ -97,6 +103,8 @@ function saveConfig() {
         token: a.token,
         enabled: a.enabled !== false,
         source: "ui",
+        workerId: a.workerId || null,
+        workerName: a.workerName || null,
         addedAt: a.addedAt,
         updatedAt: a.updatedAt || nowIso(),
       })),
@@ -131,6 +139,7 @@ function publicState() {
   return {
     ok: true,
     baseUrl: config.baseUrl,
+    hostname: HOST_LABEL,
     pollSec: POLL_INTERVAL_MS / 1000,
     ui: `http://${UI_HOST}:${UI_PORT}`,
     configPath: CONFIG_PATH,
@@ -138,6 +147,8 @@ function publicState() {
       email: a.email,
       enabled: a.enabled !== false,
       source: a.source || "ui",
+      workerId: a.workerId || null,
+      workerName: a.workerName || null,
       addedAt: a.addedAt,
       updatedAt: a.updatedAt,
       status: statusOf(a.email),
@@ -149,12 +160,19 @@ function accountByEmail(email) {
   return config.accounts.find((a) => a.email === email);
 }
 
+// ヘッダーに使えるようASCII以外を落としたホスト名。サーバー側の一覧表示に使われる。
+const HOST_LABEL = String(os.hostname() || "").replace(/[^\x20-\x7E]/g, "").trim().slice(0, 100);
+
 function authHeaders(account, extra = {}) {
-  return {
+  const headers = {
     "X-Account-Email": account.email,
     Authorization: `Bearer ${account.token}`,
     ...extra,
   };
+  if (HOST_LABEL) headers["X-Worker-Name"] = HOST_LABEL;
+  // サーバーが割り振ったIDが分かっていれば送り返す（IPが変わっても同一PC扱いになる）。
+  if (account.workerId) headers["X-Worker-Id"] = String(account.workerId);
+  return headers;
 }
 
 function serverUrl(pathname) {
@@ -227,9 +245,39 @@ async function reportError(account, job, error) {
   }
 }
 
+// claim のレスポンスでサーバーが割り振ったこのPCのIDを知らせてくるので、
+// 保存して以後のリクエストで名乗る。旧サーバーはこのフィールドを返さないが、
+// その場合も従来通り動作する。
+function rememberWorkerIdentity(account, claimed) {
+  const id = Number(claimed?.workerId);
+  const name = String(claimed?.workerName || "").trim() || null;
+  if (!Number.isInteger(id) || id <= 0) return;
+  if (account.workerId === id && account.workerName === name) return;
+  const first = !account.workerId;
+  account.workerId = id;
+  account.workerName = name;
+  account.updatedAt = nowIso();
+  if (first) console.log(`[${account.email}] サーバーがこのPCにID #${id} を割り振りました`);
+  if (account.source !== "env") {
+    try {
+      saveConfig();
+    } catch (e) {
+      console.error(`ワーカーIDの保存に失敗（動作は継続）: ${e.message}`);
+    }
+  }
+}
+
 async function processOne(account) {
   updateStatus(account.email, { state: "polling", message: "ジョブ確認中" });
   const claimed = await postJson(account, "/api/audio/worker/claim");
+  rememberWorkerIdentity(account, claimed);
+  if (claimed.allowed === false) {
+    updateStatus(account.email, {
+      state: "idle",
+      message: `このPC(ID #${claimed.workerId ?? "?"})はサーバー設定で処理対象外です`,
+    });
+    return false;
+  }
   const job = claimed.job;
   if (!job) {
     updateStatus(account.email, { state: "idle", message: "待機中" });
@@ -273,7 +321,7 @@ function activeAccounts() {
 }
 
 async function workerLoop() {
-  console.log(`audio-worker 起動: ${cleanBaseUrl(config.baseUrl)} / ${POLL_INTERVAL_MS / 1000}秒間隔`);
+  console.log(`audio-worker 起動: ${cleanBaseUrl(config.baseUrl)} / ${POLL_INTERVAL_MS / 1000}秒間隔 / PC名=${HOST_LABEL || "(不明)"}`);
   while (!stopping) {
     const accounts = activeAccounts();
     if (!accounts.length) {
@@ -443,7 +491,8 @@ function htmlPage() {
         state.accounts.map(a => {
           const st = a.status || {};
           return '<tr>' +
-            '<td><strong>' + esc(a.email) + '</strong><br><span class="small muted">' + (a.enabled ? '有効' : '停止中') + ' / ' + esc(a.source) + '</span></td>' +
+            '<td><strong>' + esc(a.email) + '</strong><br><span class="small muted">' + (a.enabled ? '有効' : '停止中') + ' / ' + esc(a.source) + '</span>' +
+              (a.workerId ? '<br><span class="small muted">サーバー割当ID #' + esc(a.workerId) + (a.workerName ? ' (' + esc(a.workerName) + ')' : '') + '</span>' : '') + '</td>' +
             '<td>' + statusPill(st) + '</td>' +
             '<td><div>' + esc(st.message || '') + '</div><div class="small muted">' + esc(st.lastSeenAt || '') + '</div></td>' +
             '<td>' + (st.completed || 0) + ' / ' + (st.failed || 0) + '</td>' +

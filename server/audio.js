@@ -78,8 +78,11 @@ async function finishJobWithText(job, text) {
 }
 
 // ローカルPCの外部ワーカー用: ログインユーザー本人の queued ジョブを1件だけ確保する。
-async function claimRemoteJob(email) {
-  const job = await db.claimNextAudioJob(email);
+// workerId はサーバーが audio_workers で割り振ったワーカーPCのID。複数PCが同時に
+// ポーリングしても claim は1件ずつ原子的に確保されるため、手が空いたPCから順に
+// 別々のジョブが割り振られる。
+async function claimRemoteJob(email, workerId = null) {
+  const job = await db.claimNextAudioJob(email, workerId);
   if (!job) return null;
   const quality = await db.getSttQuality(email).catch(() => "high");
   return {
@@ -91,8 +94,8 @@ async function claimRemoteJob(email) {
   };
 }
 
-async function getClaimedJob(email, id) {
-  const job = await db.getClaimedAudioJob(email, Number(id));
+async function getClaimedJob(email, id, workerId = null) {
+  const job = await db.getClaimedAudioJob(email, Number(id), workerId);
   if (!job) return null;
   if (!fs.existsSync(job.stored_path)) {
     await db.finishAudioJob(job.id, { status: "error", error: "音声ファイルが見つかりません" });
@@ -101,8 +104,8 @@ async function getClaimedJob(email, id) {
   return job;
 }
 
-async function completeRemoteJob(email, id, { text, error } = {}) {
-  const job = await getClaimedJob(email, id);
+async function completeRemoteJob(email, id, { text, error, workerId = null } = {}) {
+  const job = await getClaimedJob(email, id, workerId);
   if (!job) return { ok: false, status: 404, error: "処理中の音声ジョブが見つかりません" };
   if (error) {
     await db.finishAudioJob(job.id, { status: "error", error: String(error).slice(0, 1000) });

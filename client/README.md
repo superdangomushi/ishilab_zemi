@@ -71,3 +71,25 @@ AUDIO_WORKER_POLL_SEC=5 npm start
 The server then saves the returned text as a transcript and runs the same
 Gemini analysis, task updates, cancellations, and daily-summary refresh as a
 normal text upload.
+
+## Multiple worker PCs
+
+You can run this worker on several PCs at the same time, even with the same
+account. Each claim atomically marks exactly one queued job as `processing`,
+so concurrent workers always receive different jobs and the queue is spread
+across whichever PCs are idle.
+
+The **server** assigns an ID to each worker PC on its first claim and returns
+it in the claim response. This client stores the ID per account in
+`accounts.json`, shows it in the local UI, and echoes it back via the
+`X-Worker-Id` header (it also sends its hostname as `X-Worker-Name` for
+display). Older clients that send neither header still work: the server
+recognizes them by their source IP and assigns an ID automatically.
+
+On the server dashboard (files tab), each user can select which of their
+worker PCs are allowed to process audio — multiple PCs can be checked at
+once. Unchecked PCs keep polling but receive no jobs. The server also records
+which worker claimed each job, so if a stalled job is re-queued and picked up
+by another PC, a late result from the original PC is rejected instead of
+being saved twice (for old clients that omit `X-Worker-Id`, this strict check
+is skipped to keep them compatible).

@@ -144,10 +144,26 @@ CREATE TABLE IF NOT EXISTS audio_jobs (
   error         TEXT         NULL,
   -- 文字起こし完了後に作られた transcripts 行への参照。
   transcript_id INT          NULL,
+  -- ジョブを確保したワーカーPC（audio_workers.id）。二重処理防止と処理元表示用。
+  claimed_by    INT          NULL,
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_audio_email (email, created_at),
   KEY idx_audio_status (status)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 音声ジョブを処理するワーカーPC（クライアント）。IDはサーバーが自動採番し、
+-- ユーザーはダッシュボードでどのPCに処理させるか（allowed）を複数選択できる。
+-- IDを送らない旧クライアントは接続元IP＋アカウントで同一PCとみなして再利用する。
+CREATE TABLE IF NOT EXISTS audio_workers (
+  id           INT AUTO_INCREMENT PRIMARY KEY,
+  email        VARCHAR(255) NOT NULL,
+  ip           VARCHAR(64)  NULL,
+  name         VARCHAR(255) NOT NULL,
+  allowed      TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_workers_email (email)
 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- 送信済みリマインド通知の記録（履歴・二重送信防止の補助）。

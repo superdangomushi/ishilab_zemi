@@ -157,10 +157,31 @@ async function ensureSchema() {
       status        VARCHAR(16)  NOT NULL DEFAULT 'queued',
       error         TEXT         NULL,
       transcript_id INT          NULL,
+      claimed_by    INT          NULL,
       created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_audio_email (email, created_at),
       KEY idx_audio_status (status)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
+  // ジョブを確保したワーカーPC（audio_workers.id）。再キュー後の二重処理防止と
+  // 「どのPCが処理したか」の表示に使う。
+  await addColumnIfMissing("audio_jobs", "claimed_by", "INT NULL");
+
+  // 音声ジョブを処理するワーカーPC（クライアント）。IDはサーバーが自動で割り振り、
+  // ユーザーはダッシュボードでどのPCに処理させるかを複数選択できる（allowed）。
+  // 旧クライアントはIDを送らないため、接続元IP＋アカウントで同一PCを推定する。
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audio_workers (
+      id           INT AUTO_INCREMENT PRIMARY KEY,
+      email        VARCHAR(255) NOT NULL,
+      ip           VARCHAR(64)  NULL,
+      name         VARCHAR(255) NOT NULL,
+      allowed      TINYINT(1)   NOT NULL DEFAULT 1,
+      created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_workers_email (email)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
 
@@ -614,6 +635,94 @@ async function markNotified(id, flagColumn) {
 }
 
 // =====================================================================
+// 音声ワーカーPC（audio_workers）
+// =====================================================================
+
+// リクエスト元のワーカーPCを特定して返す（無ければ登録してIDを割り振る）。
+// 新クライアントはサーバーが割り振ったIDを X-Worker-Id で送り返してくるので
+// それを最優先し、IDを送らない旧クライアントは接続元IP＋アカウントで
+// 同一PCとみなす。初回登録時は allowed=1（処理を許可）で作る。
+async function resolveAudioWorker(email, { id = null, ip = null, name = null } = {}) {
+  const better = String(name || "").trim().slice(0, 255);
+  if (id) {
+    const [rows] = await pool.query(
+      `SELECT id, email, ip, name, allowed FROM audio_workers WHERE id = ? AND email = ? LIMIT 1`,
+      [Number(id), email]
+    );
+    if (rows[0]) {
+      // 自動命名（PC (ip)）のままなら、クライアントが名乗ったホスト名に置き換える。
+      const rename = better && /^PC \(/.test(rows[0].name) ? better : null;
+      await pool.query(
+        `UPDATE audio_workers SET ip = ?, name = COALESCE(?, name), last_seen_at = NOW() WHERE id = ?`,
+        [ip, rename, rows[0].id]
+      );
+      if (rename) rows[0].name = rename;
+      if (ip) rows[0].ip = ip;
+      return rows[0];
+    }
+  }
+  if (ip) {
+    const [rows] = await pool.query(
+      `SELECT id, email, ip, name, allowed FROM audio_workers
+       WHERE email = ? AND ip = ? ORDER BY id ASC LIMIT 1`,
+      [email, ip]
+    );
+    if (rows[0]) {
+      const rename = better && /^PC \(/.test(rows[0].name) ? better : null;
+      await pool.query(
+        `UPDATE audio_workers SET name = COALESCE(?, name), last_seen_at = NOW() WHERE id = ?`,
+        [rename, rows[0].id]
+      );
+      if (rename) rows[0].name = rename;
+      return rows[0];
+    }
+  }
+  const label = better || (ip ? `PC (${ip})` : "PC");
+  const [r] = await pool.query(
+    `INSERT INTO audio_workers (email, ip, name) VALUES (?, ?, ?)`,
+    [email, ip, label]
+  );
+  return { id: r.insertId, email, ip, name: label, allowed: 1 };
+}
+
+async function listAudioWorkers(email) {
+  const [rows] = await pool.query(
+    `SELECT id, ip, name, allowed, created_at, last_seen_at
+     FROM audio_workers WHERE email = ? ORDER BY id ASC`,
+    [email]
+  );
+  return rows;
+}
+
+async function updateAudioWorker(email, id, { allowed = null, name = null } = {}) {
+  const sets = [];
+  const args = [];
+  if (allowed !== null) {
+    sets.push("allowed = ?");
+    args.push(allowed ? 1 : 0);
+  }
+  if (name !== null && String(name).trim()) {
+    sets.push("name = ?");
+    args.push(String(name).trim().slice(0, 255));
+  }
+  if (!sets.length) return 0;
+  args.push(Number(id), email);
+  const [r] = await pool.query(
+    `UPDATE audio_workers SET ${sets.join(", ")} WHERE id = ? AND email = ?`,
+    args
+  );
+  return r.affectedRows;
+}
+
+async function deleteAudioWorker(email, id) {
+  const [r] = await pool.query(
+    `DELETE FROM audio_workers WHERE id = ? AND email = ?`,
+    [Number(id), email]
+  );
+  return r.affectedRows;
+}
+
+// =====================================================================
 // 音声文字起こしジョブ（audio_jobs）
 // =====================================================================
 
@@ -626,49 +735,53 @@ async function createAudioJob(email, filename, storedPath, mime, sizeBytes) {
   return r.insertId;
 }
 
-// 次の待機ジョブを1件つかんで processing にする（多重取得防止のため UPDATE で確保）。
+// 次の待機ジョブを1件つかんで processing にする。
+// UPDATE ... ORDER BY ... LIMIT 1 の1文で確保するため、複数のワーカーPCが
+// 同時にポーリングしても同じジョブを二重取得せず、それぞれ別のジョブが渡る。
 // email を渡すと、そのユーザー本人のジョブだけを外部ワーカーへ渡す。
-async function claimNextAudioJob(email = null) {
+async function claimNextAudioJob(email = null, workerId = null) {
+  // LAST_INSERT_ID(expr) は接続ごとの値なので、UPDATE と SELECT を同一接続で行う。
   const conn = await pool.getConnection();
   try {
-    await conn.beginTransaction();
     const where = ["status = 'queued'"];
-    const args = [];
+    const args = [workerId];
     if (email) {
       where.push("email = ?");
       args.push(email);
     }
-    const [rows] = await conn.query(
-      `SELECT id, email, filename, stored_path, mime, size_bytes, created_at
-       FROM audio_jobs
+    const [r] = await conn.query(
+      `UPDATE audio_jobs
+       SET id = LAST_INSERT_ID(id), status = 'processing', claimed_by = ?, error = NULL
        WHERE ${where.join(" AND ")}
-       ORDER BY id ASC LIMIT 1 FOR UPDATE`,
+       ORDER BY id ASC LIMIT 1`,
       args
     );
-    if (!rows[0]) {
-      await conn.commit();
-      return null;
-    }
-    await conn.query(`UPDATE audio_jobs SET status = 'processing', error = NULL WHERE id = ?`, [rows[0].id]);
-    await conn.commit();
-    return rows[0];
-  } catch (e) {
-    await conn.rollback();
-    throw e;
+    if (!r.affectedRows) return null;
+    const [rows] = await conn.query(
+      `SELECT id, email, filename, stored_path, mime, size_bytes, created_at
+       FROM audio_jobs WHERE id = LAST_INSERT_ID()`
+    );
+    return rows[0] || null;
   } finally {
     conn.release();
   }
 }
 
-async function getClaimedAudioJob(email, id) {
+async function getClaimedAudioJob(email, id, workerId = null) {
   const [rows] = await pool.query(
-    `SELECT id, email, filename, stored_path, mime, size_bytes, status
+    `SELECT id, email, filename, stored_path, mime, size_bytes, status, claimed_by
      FROM audio_jobs
      WHERE id = ? AND email = ? AND status = 'processing'
      LIMIT 1`,
     [id, email]
   );
-  return rows[0] || null;
+  const job = rows[0];
+  if (!job) return null;
+  // 再キュー後に別ワーカーが確保し直したジョブへ、元のワーカーが結果を
+  // 送って二重保存になるのを防ぐ。ワーカーIDを送らない旧クライアントと
+  // claimed_by が無い既存ジョブは従来通り許可する。
+  if (workerId && job.claimed_by && Number(job.claimed_by) !== Number(workerId)) return null;
+  return job;
 }
 
 async function finishAudioJob(id, { status, error = null, transcriptId = null }) {
@@ -680,8 +793,11 @@ async function finishAudioJob(id, { status, error = null, transcriptId = null })
 
 async function listAudioJobs(email, limit = 30) {
   const [rows] = await pool.query(
-    `SELECT id, filename, size_bytes, status, error, transcript_id, created_at, updated_at
-     FROM audio_jobs WHERE email = ? ORDER BY id DESC LIMIT ?`,
+    `SELECT j.id, j.filename, j.size_bytes, j.status, j.error, j.transcript_id,
+            j.created_at, j.updated_at, j.claimed_by, w.name AS worker_name
+     FROM audio_jobs j
+     LEFT JOIN audio_workers w ON w.id = j.claimed_by AND w.email = j.email
+     WHERE j.email = ? ORDER BY j.id DESC LIMIT ?`,
     [email, limit]
   );
   return rows;
@@ -692,12 +808,12 @@ async function requeueStaleAudioJobs(staleMinutes = null) {
   const minutes = Number(staleMinutes);
   const [r] = Number.isFinite(minutes) && minutes > 0
     ? await pool.query(
-      `UPDATE audio_jobs SET status = 'queued'
+      `UPDATE audio_jobs SET status = 'queued', claimed_by = NULL
        WHERE status = 'processing' AND updated_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)`,
       [Math.floor(minutes)]
     )
     : await pool.query(
-      `UPDATE audio_jobs SET status = 'queued' WHERE status = 'processing'`
+      `UPDATE audio_jobs SET status = 'queued', claimed_by = NULL WHERE status = 'processing'`
     );
   return r.affectedRows;
 }
@@ -1072,6 +1188,10 @@ module.exports = {
   findDueTasks,
   markNotified,
   // audio jobs
+  resolveAudioWorker,
+  listAudioWorkers,
+  updateAudioWorker,
+  deleteAudioWorker,
   createAudioJob,
   claimNextAudioJob,
   getClaimedAudioJob,
