@@ -7,6 +7,7 @@ import com.ishilab.transcriber.model.ModelManager
 import com.ishilab.transcriber.model.WhisperModel
 import com.ishilab.transcriber.net.AccountStore
 import com.ishilab.transcriber.net.AiHelperClient
+import com.ishilab.transcriber.net.BackgroundSync
 import com.ishilab.transcriber.google.CalendarEvent
 import com.ishilab.transcriber.google.GoogleCalendarClient
 import com.google.android.gms.auth.api.signin.GoogleSignIn
