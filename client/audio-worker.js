@@ -259,10 +259,14 @@ async function metricsLoop() {
     latestMetrics = { cpu: sampleCpuPct(), mem: sampleMemPct(), gpu, at: nowIso() };
     for (const account of activeAccounts()) {
       try {
+        const st = statusOf(account.email);
         const r = await postJson(account, "/api/audio/worker/metrics", {
           cpu: latestMetrics.cpu,
           mem: latestMetrics.mem,
           gpu: latestMetrics.gpu,
+          // 処理中ジョブのハートビート。サーバーはこれが途絶えたジョブを
+          // 「ワーカーが停止した」とみなして再キューし、別のPCへ振り直す。
+          activeJobId: st.state === "working" && st.lastJobId ? st.lastJobId : null,
         });
         rememberWorkerIdentity(account, r);
         metricsErrorLogged.delete(account.email);
@@ -546,7 +550,7 @@ function htmlPage() {
           <input type="radio" name="workerMode" value="global">
           <span><strong>global</strong> — このサービスの全ユーザーの音声処理を担うPCとして公開します</span>
         </label>
-        <div class="small muted">モードは「保存」で反映されます。globalでは他のユーザーの音声データがこのPCにダウンロードされて処理されます。</div>
+        <div class="small muted">モードは選択した時点で保存されます。globalでは他のユーザーの音声データがこのPCにダウンロードされて処理されます。</div>
       </div>
       <div class="small muted" id="metricsLine" style="margin-top:10px"></div>
     </section>
@@ -639,7 +643,12 @@ function htmlPage() {
 
     async function saveSettings() {
       const mode = document.querySelector('input[name="workerMode"]:checked')?.value || 'private';
-      await api('/api/settings', { method:'POST', body: JSON.stringify({ baseUrl: $('baseUrl').value, mode }) });
+      try {
+        await api('/api/settings', { method:'POST', body: JSON.stringify({ baseUrl: $('baseUrl').value, mode }) });
+      } catch (e) {
+        $('notice').textContent = '設定の保存に失敗しました: ' + e.message;
+        return;
+      }
       baseUrlDirty = false;
       modeDirty = false;
       $('notice').textContent = '設定を保存しました（モード: ' + mode + '）';
@@ -677,8 +686,19 @@ function htmlPage() {
     }
 
     $('baseUrl').addEventListener('input', () => { baseUrlDirty = true; });
+    // モードはラジオを選んだ時点で保存する（「保存」ボタン待ちにすると、押し忘れて
+    // リロードで元に戻ったように見えるため）。baseUrl は入力途中がありうるので送らない。
     document.querySelectorAll('input[name="workerMode"]').forEach((el) => {
-      el.addEventListener('change', () => { modeDirty = true; });
+      el.addEventListener('change', async () => {
+        modeDirty = true;
+        try {
+          await api('/api/settings', { method:'POST', body: JSON.stringify({ mode: el.value }) });
+          modeDirty = false;
+          $('notice').textContent = 'モードを ' + el.value + ' に変更しました';
+        } catch (e) {
+          $('notice').textContent = 'モードの保存に失敗しました: ' + e.message;
+        }
+      });
     });
     $('baseUrl').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') saveSettings();
@@ -700,7 +720,8 @@ async function handleUi(req, res) {
 
     if (req.method === "POST" && u.pathname === "/api/settings") {
       const body = await readJson(req);
-      config.baseUrl = cleanBaseUrl(body.baseUrl);
+      // モードだけの部分更新でも baseUrl を既定値に巻き戻さないよう、送られた項目のみ反映する。
+      if (body.baseUrl !== undefined) config.baseUrl = cleanBaseUrl(body.baseUrl);
       if (body.mode !== undefined) config.mode = normalizeMode(body.mode);
       saveConfig();
       return sendJson(res, 200, { ok: true });
