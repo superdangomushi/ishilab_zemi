@@ -1210,6 +1210,12 @@ app.post("/api/audio/worker/metrics", async (req, res) => {
       mem: pct(req.body?.mem),
       gpu: pct(req.body?.gpu),
     });
+    // 処理中ジョブのハートビート。これが10分（AUDIO_WORKER_STALE_MIN）途絶えると
+    // requeueStaleAudioJobs がジョブを queued に戻し、別のPCへ振り直す。
+    const activeJobId = Number(req.body?.activeJobId);
+    if (Number.isInteger(activeJobId) && activeJobId > 0) {
+      await db.touchAudioJob(activeJobId, worker.id);
+    }
     res.json({ ok: true, workerId: worker.id, workerName: worker.name, mode: worker.mode || "private" });
   } catch (e) {
     console.error("外部音声ワーカーのメトリクス保存に失敗:", e.message);

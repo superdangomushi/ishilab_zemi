@@ -879,6 +879,19 @@ async function getClaimedAudioJob(email, id, workerId = null) {
   return job;
 }
 
+// 処理中ジョブのハートビート。ワーカーが3秒ごとのメトリクス送信に載せてくる
+// activeJobId で updated_at を進め、requeueStaleAudioJobs による再キューを防ぐ。
+// 自分が claim したジョブ以外は触れない。
+async function touchAudioJob(id, workerId) {
+  if (!Number.isInteger(Number(id)) || !workerId) return 0;
+  const [r] = await pool.query(
+    `UPDATE audio_jobs SET updated_at = NOW()
+     WHERE id = ? AND status = 'processing' AND claimed_by = ?`,
+    [Number(id), Number(workerId)]
+  );
+  return r.affectedRows;
+}
+
 async function finishAudioJob(id, { status, error = null, transcriptId = null }) {
   await pool.query(
     `UPDATE audio_jobs SET status = ?, error = ?, transcript_id = ? WHERE id = ?`,
@@ -898,7 +911,10 @@ async function listAudioJobs(email, limit = 30) {
   return rows;
 }
 
-// サーバー再起動時、processing のまま残ったジョブを queued に戻す（処理が中断されたため）。
+// processing のまま updated_at が staleMinutes 以上進んでいないジョブを queued に戻す
+// （ワーカー停止・切断とみなして別のPCへ振り直す）。処理中のワーカーはハートビート
+// （touchAudioJob）で updated_at を進め続けるので、正常処理中のジョブは奪われない。
+// staleMinutes 省略時は無条件（サーバー再起動時の残骸掃除用）。
 async function requeueStaleAudioJobs(staleMinutes = null) {
   const minutes = Number(staleMinutes);
   const [r] = Number.isFinite(minutes) && minutes > 0
@@ -1311,6 +1327,7 @@ module.exports = {
   createAudioJob,
   claimNextAudioJob,
   getClaimedAudioJob,
+  touchAudioJob,
   finishAudioJob,
   listAudioJobs,
   requeueStaleAudioJobs,

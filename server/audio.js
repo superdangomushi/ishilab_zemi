@@ -15,7 +15,10 @@ const gemini = require("./gemini");
 const reminders = require("./reminders");
 
 const AUDIO_DIR = path.join(__dirname, "uploads", "audio");
-const STALE_WORKER_MIN = Math.max(Number(process.env.AUDIO_WORKER_STALE_MIN || 180), 15);
+// 処理中ジョブのハートビート（クライアントが3秒ごとのメトリクスに載せる activeJobId）が
+// この分数以上途絶えたら、ワーカー停止とみなして queued に戻し別のPCへ振り直す。
+// ハートビートを送らない旧クライアントでは、10分を超える処理は途中で奪われてやり直しになる。
+const STALE_WORKER_MIN = Math.max(Number(process.env.AUDIO_WORKER_STALE_MIN || 10), 1);
 
 function ensureDir() {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
