@@ -41,6 +41,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// undici の fetch は接続失敗をすべて「fetch failed」に丸めてしまい、原因が
+// ログから分からない。cause を辿って ECONNREFUSED 127.0.0.1:443 のような
+// 実際の接続先とエラーコードまで表示する（DNS異常やURL間違いの切り分け用）。
+function describeError(e) {
+  const parts = [];
+  let c = e;
+  while (c && parts.length < 5) {
+    if (Array.isArray(c.errors) && c.errors.length) {
+      c = c.errors[0]; // AggregateError: 代表して先頭を辿る
+      continue;
+    }
+    const host = c.address || c.hostname || "";
+    const addr = host ? ` ${host}${c.port ? `:${c.port}` : ""}` : "";
+    const label = c.code ? `${c.code}${addr}` : (c.message || String(c));
+    if (!parts.includes(label)) parts.push(label);
+    c = c.cause;
+  }
+  return parts.join(" ← ") || String(e);
+}
+
 function cleanBaseUrl(value) {
   const s = String(value || "").trim().replace(/\/+$/, "");
   return s || DEFAULT_BASE_URL;
@@ -258,6 +278,10 @@ async function metricsLoop() {
     const gpu = await sampleGpuPct();
     latestMetrics = { cpu: sampleCpuPct(), mem: sampleMemPct(), gpu, at: nowIso() };
     for (const account of activeAccounts()) {
+      // サーバー割当IDをまだ受け取っていない間は送らない。ID無しの送信は
+      // サーバー側で新規PC登録になり、直後の claim 分と二重登録になるため
+      // （IDは10秒間隔の claim のレスポンスで届く。旧サーバーはこのAPI自体が無い）。
+      if (!account.workerId) continue;
       try {
         const st = statusOf(account.email);
         const r = await postJson(account, "/api/audio/worker/metrics", {
@@ -274,7 +298,7 @@ async function metricsLoop() {
         // 旧サーバー（エンドポイント未実装）等では毎回失敗するので、ログは1回だけ。
         if (!metricsErrorLogged.has(account.email)) {
           metricsErrorLogged.add(account.email);
-          console.error(`[${account.email}] メトリクス送信に失敗（以後同じログは抑制）: ${e.message}`);
+          console.error(`[${account.email}] メトリクス送信に失敗（以後同じログは抑制）: ${describeError(e)}`);
         }
       }
     }
@@ -285,12 +309,34 @@ function serverUrl(pathname) {
   return `${cleanBaseUrl(config.baseUrl)}${pathname}`;
 }
 
+// fetch は 301/302 を追いかける際に POST を GET に変えるため、リダイレクトの先で
+// 「Cannot GET /api/...」になって原因が分からなくなる（http→https 転送のある
+// プロキシ配下で起きがち）。リダイレクトは追わずに、設定すべきURLを伝えて止める。
+async function serverFetch(pathname, options = {}) {
+  const res = await fetch(serverUrl(pathname), { redirect: "manual", ...options });
+  if ([301, 302, 303, 307, 308].includes(res.status)) {
+    const loc = res.headers.get("location") || "(不明)";
+    throw new Error(
+      `公開サーバーURL ${cleanBaseUrl(config.baseUrl)} はリダイレクトされています ` +
+      `(HTTP ${res.status} → ${loc})。POSTがGETに変わって失敗するため、` +
+      `設定の公開サーバーURLをリダイレクト先に合わせてください`
+    );
+  }
+  return res;
+}
+
 async function loginWithPassword(email, password) {
-  const res = await fetch(serverUrl("/api/login"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
+  let res;
+  try {
+    res = await serverFetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch (e) {
+    if (String(e.message).includes("リダイレクト")) throw e;
+    throw new Error(`${serverUrl("")} に接続できません: ${describeError(e)}`);
+  }
   const text = await res.text();
   let json = null;
   try {
@@ -305,7 +351,7 @@ async function loginWithPassword(email, password) {
 }
 
 async function postJson(account, pathname, body = {}) {
-  const res = await fetch(serverUrl(pathname), {
+  const res = await serverFetch(pathname, {
     method: "POST",
     headers: authHeaders(account, { "Content-Type": "application/json", Accept: "application/json" }),
     body: JSON.stringify(body),
@@ -331,7 +377,7 @@ function safeName(job) {
 
 async function downloadJobFile(account, job) {
   const filePath = path.join(WORK_DIR, `${account.email.replace(/[^A-Za-z0-9._-]/g, "_")}-${safeName(job)}`);
-  const res = await fetch(serverUrl(job.downloadPath), {
+  const res = await serverFetch(job.downloadPath, {
     headers: authHeaders(account, { Accept: "application/octet-stream" }),
   });
   if (!res.ok) {
@@ -413,8 +459,8 @@ async function processOne(account) {
     );
   } catch (e) {
     statusOf(account.email).failed += 1;
-    updateStatus(account.email, { state: "error", message: e.message });
-    console.error(`[${account.email}] ジョブ #${job.id} 失敗: ${e.message}`);
+    updateStatus(account.email, { state: "error", message: describeError(e) });
+    console.error(`[${account.email}] ジョブ #${job.id} 失敗: ${describeError(e)}`);
     await reportError(account, job, e);
   } finally {
     if (filePath) fs.unlink(filePath, () => {});
@@ -444,8 +490,8 @@ async function workerLoop() {
       try {
         worked = (await processOne(account)) || worked;
       } catch (e) {
-        updateStatus(account.email, { state: "error", message: e.message });
-        console.error(`[${account.email}] ポーリング失敗: ${e.message}`);
+        updateStatus(account.email, { state: "error", message: describeError(e) });
+        console.error(`[${account.email}] ポーリング失敗: ${describeError(e)}`);
       }
     }
     await sleep(worked ? 500 : POLL_INTERVAL_MS);

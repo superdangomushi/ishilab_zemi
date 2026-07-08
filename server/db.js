@@ -667,7 +667,7 @@ async function markNotified(id, flagColumn) {
 // 新クライアントはサーバーが割り振ったIDを X-Worker-Id で送り返してくるので
 // それを最優先し、IDを送らない旧クライアントは接続元IP＋アカウントで
 // 同一PCとみなす。初回登録時は allowed=1（処理を許可）で作る。
-async function resolveAudioWorker(email, { id = null, ip = null, name = null, mode = null } = {}) {
+async function resolveAudioWorker(email, { id = null, ip = null, name = null, mode = null, legacy = true } = {}) {
   const better = String(name || "").trim().slice(0, 255);
   // mode はクライアントが X-Worker-Mode で申告したときだけ更新する
   // （旧クライアントはヘッダーを送らないため既存値を維持）。
@@ -690,7 +690,12 @@ async function resolveAudioWorker(email, { id = null, ip = null, name = null, mo
       return rows[0];
     }
   }
-  if (ip) {
+  // IPによる同一PC推定は、IDもホスト名も名乗らない旧mainクライアントに限る。
+  // NAT・プロキシ配下では別PC同士が同じ接続元IPになるため、新クライアントまで
+  // IPで同一視すると別PCが1台に併合され、以後同じIDを名乗り合って混線する。
+  // 新クライアントはIDを持っていなければ常に新規採番する（claim レスポンスで
+  // IDを受け取って保存するので、次回からはIPが変わっても同一PCと分かる）。
+  if (ip && legacy) {
     const [rows] = await pool.query(
       `SELECT id, email, ip, name, allowed, mode FROM audio_workers
        WHERE email = ? AND ip = ? ORDER BY id ASC LIMIT 1`,

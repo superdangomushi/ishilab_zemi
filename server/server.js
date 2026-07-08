@@ -1064,6 +1064,13 @@ function clientIpOf(req) {
   return ip || null;
 }
 
+// 旧mainクライアントかどうか。新クライアントは X-Worker-Mode を常に送り、
+// 多くの場合 X-Worker-Name も送る。どちらも無い接続だけを旧クライアントとみなし、
+// 接続元IPによる同一PC推定（resolveAudioWorker の legacy 動作）を許す。
+function isLegacyWorkerReq(req) {
+  return !String(req.get("x-worker-mode") || "").trim() && !String(req.get("x-worker-name") || "").trim();
+}
+
 // 音声を処理するクライアントPCの一覧。ユーザーはこの中から処理させるPCを
 // 複数選択（allowed の付け外し）できる。
 app.get("/api/audio/workers", async (req, res) => {
@@ -1158,6 +1165,7 @@ app.post("/api/audio/worker/claim", async (req, res) => {
       ip: clientIpOf(req),
       name: workerNameFromReq(req),
       mode: workerModeFromReq(req),
+      legacy: isLegacyWorkerReq(req),
     });
     const base = {
       ok: true,
@@ -1204,6 +1212,7 @@ app.post("/api/audio/worker/metrics", async (req, res) => {
       ip: clientIpOf(req),
       name: workerNameFromReq(req),
       mode: workerModeFromReq(req),
+      legacy: isLegacyWorkerReq(req),
     });
     await db.updateAudioWorkerMetrics(worker.id, {
       cpu: pct(req.body?.cpu),
