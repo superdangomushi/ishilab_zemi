@@ -195,13 +195,15 @@ async function ensureSchema() {
   await addColumnIfMissing("audio_workers", "gpu_pct", "FLOAT NULL");
   await addColumnIfMissing("audio_workers", "metrics_at", "DATETIME NULL");
 
-  // globalワーカーに対する各ユーザーの利用可否。行が無ければ「利用する」扱い。
-  // （audio_workers.allowed は所有者自身の設定なので、他ユーザー分はここで持つ）
+  // globalワーカーに対する各ユーザーの利用可否。行が無ければ「利用しない」扱い
+  // （オプトイン。他ユーザー提供のPCへ音声が流れるのはユーザーが明示的に
+  // チェックを入れたときだけ）。audio_workers.allowed は所有者自身の設定なので、
+  // 他ユーザー分はここで持つ。
   await pool.query(`
     CREATE TABLE IF NOT EXISTS audio_worker_prefs (
       email      VARCHAR(255) NOT NULL,
       worker_id  INT          NOT NULL,
-      allowed    TINYINT(1)   NOT NULL DEFAULT 1,
+      allowed    TINYINT(1)   NOT NULL DEFAULT 0,
       updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (email, worker_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
@@ -722,7 +724,7 @@ async function resolveAudioWorker(email, { id = null, ip = null, name = null, mo
 
 // 自分のPCに加え、他ユーザーが global として公開しているPC（所有者が稼働許可
 // しているものだけ）も返す。global PC の利用可否は audio_worker_prefs から
-// 引いた pref_allowed（行が無ければ許可扱い）。
+// 引いた pref_allowed（行が無ければ不許可＝未選択扱い）。
 async function listAudioWorkers(email) {
   const [rows] = await pool.query(
     `SELECT w.id, w.ip, w.name, w.allowed, w.mode,
@@ -817,9 +819,10 @@ async function createAudioJob(email, filename, storedPath, mime, sizeBytes) {
 // UPDATE ... ORDER BY ... LIMIT 1 の1文で確保するため、複数のワーカーPCが
 // 同時にポーリングしても同じジョブを二重取得せず、それぞれ別のジョブが渡る。
 // email を渡すと、そのユーザー本人のジョブだけを外部ワーカーへ渡す。
-// global ワーカー（email = null）の場合は respectPrefs を立てて、そのPCの利用を
-// 断っているユーザー（audio_worker_prefs.allowed = 0）のジョブを除外する。
-async function claimNextAudioJob(email = null, workerId = null, { respectPrefs = false } = {}) {
+// global ワーカー（email = null）の場合は respectPrefs を立てて、所有者本人のジョブと、
+// そのPCの利用を明示的に許可したユーザー（audio_worker_prefs.allowed = 1）の
+// ジョブだけを対象にする（オプトイン。未設定ユーザーのジョブは渡さない）。
+async function claimNextAudioJob(email = null, workerId = null, { respectPrefs = false, workerOwner = null } = {}) {
   // LAST_INSERT_ID(expr) は接続ごとの値なので、UPDATE と SELECT を同一接続で行う。
   const conn = await pool.getConnection();
   try {
@@ -830,11 +833,11 @@ async function claimNextAudioJob(email = null, workerId = null, { respectPrefs =
       args.push(email);
     }
     if (respectPrefs && workerId) {
-      where.push(`NOT EXISTS (
+      where.push(`(email = ? OR EXISTS (
         SELECT 1 FROM audio_worker_prefs p
-        WHERE p.worker_id = ? AND p.email = audio_jobs.email AND p.allowed = 0
-      )`);
-      args.push(workerId);
+        WHERE p.worker_id = ? AND p.email = audio_jobs.email AND p.allowed = 1
+      ))`);
+      args.push(workerOwner, workerId);
     }
     const [r] = await conn.query(
       `UPDATE audio_jobs

@@ -1090,8 +1090,8 @@ app.get("/api/audio/workers", async (req, res) => {
           owned,
           mode: w.mode || "private",
           // 自分のPCは所有者設定(allowed)、他ユーザーのglobal PCは自分のprefs
-          // （未設定なら利用する扱い）。
-          allowed: owned ? Boolean(w.allowed) : w.pref_allowed === null || Boolean(w.pref_allowed),
+          // （未設定なら利用しない扱い＝デフォルト未選択のオプトイン）。
+          allowed: owned ? Boolean(w.allowed) : Boolean(w.pref_allowed),
           lastSeenAt: w.last_seen_at,
           // クライアントの3秒間隔メトリクス送信があるため60秒以内なら「接続中」。
           online: Boolean(w.last_seen_at) && Date.now() - new Date(w.last_seen_at).getTime() < 60_000,
@@ -1175,8 +1175,8 @@ app.post("/api/audio/worker/claim", async (req, res) => {
       allowed: Boolean(worker.allowed),
     };
     if (!worker.allowed) return res.json({ ...base, job: null });
-    // global モードのPCは全ユーザーのジョブを処理対象にする（そのPCの利用を
-    // 断っているユーザーのジョブは claim 時に除外される）。ただしリクエスト自体が
+    // global モードのPCは、所有者本人とそのPCの利用を明示的に許可したユーザーの
+    // ジョブを処理対象にする（未設定ユーザーは claim 時に除外される）。ただしリクエスト自体が
     // global を申告している場合に限る: 旧クライアント（ヘッダー無し）は他ユーザーの
     // ジョブをダウンロードできず滞留させてしまうため、常に本人のジョブだけを渡す。
     const global = worker.mode === "global" && workerModeFromReq(req) === "global";
@@ -2195,7 +2195,7 @@ function renderDashboard() {
         <p class="muted" style="margin:.2rem 0 .5rem">
           音声を処理させるPCを選べます（複数選択可）。チェックを外したPCには新しいジョブを割り振りません。
           PCで audio-worker を起動して最初に接続した時に、サーバーがIDを自動で割り振ってここに表示します。
-          種別が global のPCは提供者以外のユーザーの音声も処理します（他ユーザー提供のglobal PCに任せたくない場合はチェックを外してください）。
+          他ユーザー提供の global PC は初期状態では使いません。任せてもよい場合だけチェックを入れてください（そのPCにあなたの音声がダウンロードされて処理されます）。
           CPU/メモリ/GPU はクライアントから3秒ごとに届く使用率です。
         </p>
         <div id="audioWorkers" style="margin-bottom:.8rem"><p class="muted">読み込み中…</p></div>

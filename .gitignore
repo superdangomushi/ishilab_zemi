@@ -1,10 +1,53 @@
+# === OS / エディタ ===
+.DS_Store
+*.swp
+*.swo
+*~
+
+# === IDE ===
+.idea/
 *.iml
+.vscode/
+
+# === Android / Gradle ===
 .gradle/
 /local.properties
-.DS_Store
-/build
+build/
 /captures
 .externalNativeBuild
-.cxx
-/app/build/
+.cxx/
 *.apk
+*.aab
+
+# === iOS / Xcode ===
+ios/**/xcuserdata/
+ios/**/*.xcworkspace/xcshareddata/swiftpm/
+ios/DerivedData/
+ios/build/
+
+# === Node.js ===
+node_modules/
+npm-debug.log*
+*.log
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# === 機密・環境設定 ===
+.env
+.env.*
+!.env.example
+accounts.json
+accounts.json.tmp
+users.json
+.cred-key
+
+# === 生成物・データ ===
+server/uploads/
+*.sqlite
+*.sqlite3
+*.db
+ggml-*.bin
