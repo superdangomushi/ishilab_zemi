@@ -360,12 +360,19 @@ const ASK_SCHEMA = {
         required: ["op"],
       },
     },
+    need_files: { type: "array", items: { type: "string" } },
   },
-  required: ["reply", "actions"],
+  required: ["reply", "actions", "need_files"],
 };
 
-// question: 利用者の発話。 ctx: { today, tasks:[…], summaries:[{day,summary}] }
-// 戻り値: { reply, actions:[{op, type, content, details, deadline_at, date_only, target}] }
+// question: 利用者の発話。
+// ctx: { today, tasks, summaries, calendar, courses, documents, snippets,
+//        targetDay, dayTranscripts, history,
+//        fileIndex:[{filename,chars,label}],            … 文字起こしの時間インデックス
+//        fetchedTranscripts:[{filename,content}] }      … need_files 要求に応じて取得済みの本文（2回目呼び出し）
+// 戻り値: { reply, actions:[…], needFiles:[filename] }
+//   needFiles が非空のときは「このファイルの本文を読ませてほしい」という要求。
+//   呼び出し側が本文を取得し、fetchedTranscripts に入れて再度 ask を呼ぶ（2段階検索）。
 async function ask(email, question, ctx = {}) {
   const apiKey = await requireApiKey(email);
   const today = ctx.today || localDate();
@@ -410,6 +417,17 @@ async function ask(email, question, ctx = {}) {
     .map((t) => `--- ${t.filename} ---\n${t.content}`)
     .join("\n\n")
     .slice(0, 30000);
+  // 文字起こしの時間インデックス（本文なしの軽量一覧）。
+  // Gemini はここから「読みたいファイル」を need_files で指名できる（トークン節約のための2段階検索）。
+  const fileIndexText = (ctx.fileIndex || [])
+    .map((f) => `${f.filename}${f.label ? `（${f.label}）` : ""} ${f.chars != null ? `${f.chars}字` : ""}`.trim())
+    .join("\n")
+    .slice(0, 8000);
+  // need_files の要求に応じてシステムが取得したファイル本文（2回目の呼び出しで入る）。
+  const fetchedText = (ctx.fetchedTranscripts || [])
+    .map((t) => `--- ${t.filename} ---\n${t.content}`)
+    .join("\n\n")
+    .slice(0, 40000);
   // 直近の会話履歴（同じチャット画面内で文脈が途切れないようにする）。
   const historyText = (ctx.history || [])
     .map((m) => `${m.role === "user" ? "利用者" : "あなた"}: ${m.content}`)
@@ -452,6 +470,17 @@ async function ask(email, question, ctx = {}) {
       dayTranscriptsText || "（この日の記録なし）",
       "",
     ] : []),
+    ...(fileIndexText ? [
+      "■ 授業・会話の録音ファイル一覧（時間インデックス。本文は含まれていない）:",
+      "（ファイル名は YYYY-MM-DD_HH.txt = その日の HH 時台の録音の文字起こし。括弧内はその時間帯の授業名）",
+      fileIndexText,
+      "",
+    ] : []),
+    ...(fetchedText ? [
+      "■ あなたの要求（need_files）に応じて取得したファイル本文:",
+      fetchedText,
+      "",
+    ] : []),
     "【利用者の発話】",
     question,
     "",
@@ -459,6 +488,22 @@ async function ask(email, question, ctx = {}) {
     "- 質問（例『今日の予定は？』『締切が近い課題は？』）には、上のデータを根拠に簡潔に答える。reply に回答文。",
     "- 授業の内容に関する質問（例『先週の統計学で何やった？』『レポートの提出条件は？』）には、",
     "  文字起こし抜粋・資料要約・日次要約を根拠に答える。どの記録に基づくかを一言添える。",
+    ...(fetchedText
+      ? [
+          "- 上の「取得したファイル本文」はあなたの要求で読み込み済みのもの。これと他のデータを根拠に必ず回答する。",
+          "  need_files は空配列にすること（追加のファイル要求はできない）。本文に答えが無ければ正直に無いと言う。",
+        ]
+      : fileIndexText
+      ? [
+          "- 過去の授業・会話の具体的な内容（例『〇〇の授業でテストはいつと言っていた？』『先生が言った提出条件』）が",
+          "  必要なのに、上のデータ（抜粋・要約）だけでは確信を持って答えられない場合は、推測で答えず、",
+          "  need_files に読みたいファイル名を最大5件入れて返すこと。ファイル名は必ず上の一覧にあるものをそのまま使う。",
+          "  選び方: 履修時間割の曜日・時限とファイル名の日付・時刻を突き合わせる",
+          "  （例: 水曜3限の授業なら、水曜日の 13時台のファイル。直近の回から優先）。",
+          "  need_files を返すとシステムが本文を取得してもう一度あなたを呼ぶので、そのときの reply は空文字でよい。",
+          "  上のデータだけで十分答えられるなら need_files は空配列にして普通に回答する。",
+        ]
+      : []),
     "- 学習内容の一般的な質問（例『t検定ってなに？』）には、あなた自身の知識で分かりやすく教えてよい。",
     "  ただし利用者の記録にある情報と一般知識の説明は区別が伝わるように話す。",
     "- 依頼（例『来週月曜にゼミの予定入れといて』『数学の宿題が出てるらしい、登録して』）なら、",
@@ -490,7 +535,14 @@ async function ask(email, question, ctx = {}) {
         target: String(a.target ?? "").trim(),
       };
     });
-  return { reply: String(parsed.reply ?? "").trim(), actions };
+  // ファイル本文の追加要求。取得済み本文を渡した2回目の呼び出しでは受け付けない（無限ループ防止）。
+  const needFiles = ctx.fetchedTranscripts
+    ? []
+    : (Array.isArray(parsed.need_files) ? parsed.need_files : [])
+        .map((f) => String(f).trim())
+        .filter(Boolean)
+        .slice(0, 5);
+  return { reply: String(parsed.reply ?? "").trim(), actions, needFiles };
 }
 
 // 発話から「登録すべき課題・予定」だけを抽出する。

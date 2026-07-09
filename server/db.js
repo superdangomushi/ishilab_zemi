@@ -457,6 +457,36 @@ async function searchTranscriptSnippets(email, keywords, { limit = 5, snippetLen
   });
 }
 
+// 文字起こしの「時間インデックス」（本文を含まない軽量一覧）。
+// AIチャットが「どのファイルを読むか」を時間から選ぶ材料にする。
+// ファイル名は "YYYY-MM-DD_HH.txt"（その日のHH時台の録音）が基本なので、名前の降順=新しい順。
+async function listTranscriptIndex(email, limit = 200) {
+  const [rows] = await pool.query(
+    `SELECT filename, CHAR_LENGTH(content) AS chars, updated_at
+     FROM transcripts
+     WHERE email = ?
+     ORDER BY filename DESC, id DESC
+     LIMIT ?`,
+    [email, Number(limit) || 200]
+  );
+  return rows;
+}
+
+// AIチャットが時間インデックスから選んだファイルの本文を返す。
+// filenames は本人のインデックスに載っている名前のみ渡すこと（呼び出し側で検証）。
+async function getTranscriptsByFilenames(email, filenames, { maxFiles = 5 } = {}) {
+  const names = [...new Set((filenames || []).map((f) => String(f).trim()).filter(Boolean))]
+    .slice(0, maxFiles);
+  if (names.length === 0) return [];
+  const [rows] = await pool.query(
+    `SELECT filename, content FROM transcripts
+     WHERE email = ? AND filename IN (${names.map(() => "?").join(",")})
+     ORDER BY filename ASC`,
+    [email, ...names]
+  );
+  return rows;
+}
+
 // =====================================================================
 // 課題・予定（tasks）
 // =====================================================================
@@ -1310,6 +1340,8 @@ module.exports = {
   getTranscriptsForDay,
   listEmailsForDailySummary,
   searchTranscriptSnippets,
+  listTranscriptIndex,
+  getTranscriptsByFilenames,
   // chat
   addChatMessage,
   listRecentChatMessages,

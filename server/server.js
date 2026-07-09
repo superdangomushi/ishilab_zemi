@@ -1431,9 +1431,29 @@ app.post("/api/ask", heavyLimiter, async (req, res) => {
     const dayTranscripts = targetDay ? await db.getTranscriptsForDay(account.email, targetDay) : [];
     // 会話が1問1答で毎回途切れないよう、直近の会話履歴も文脈として渡す。
     const history = await db.listRecentChatMessages(account.email, 20);
-    const result = await gemini.ask(account.email, question, {
-      tasks, summaries, calendar, courses, documents, snippets, targetDay, dayTranscripts, history,
-    });
+    // 文字起こしの時間インデックス（ファイル名＋その時間帯の授業名。本文なし）。
+    // Gemini はここから読みたいファイルを need_files で指名でき、指名があれば
+    // そのファイルの本文だけを取得して2回目の呼び出しで回答させる（トークン節約）。
+    const fileIndex = buildTranscriptIndex(await db.listTranscriptIndex(account.email), courses);
+    const askCtx = {
+      tasks, summaries, calendar, courses, documents, snippets, targetDay, dayTranscripts, history, fileIndex,
+    };
+    let result = await gemini.ask(account.email, question, askCtx);
+
+    if (result.needFiles && result.needFiles.length > 0) {
+      // 実在する本人のファイル名だけに絞ってから本文を取得する。
+      const known = new Set(fileIndex.map((f) => f.filename));
+      const wanted = result.needFiles.filter((f) => known.has(f));
+      const fetchedTranscripts = wanted.length
+        ? await db.getTranscriptsByFilenames(account.email, wanted, { maxFiles: 5 })
+        : [];
+      if (fetchedTranscripts.length > 0) {
+        result = await gemini.ask(account.email, question, { ...askCtx, fetchedTranscripts });
+      } else if (!result.reply) {
+        // ファイルを読みたがったが実在しなかった（reply は空で返る想定）。空応答のまま返さない。
+        result.reply = "関連する録音の記録を探しましたが、該当するファイルが見つかりませんでした。";
+      }
+    }
 
     // Gemini が返した操作を実行する。
     const applied = [];
@@ -1568,6 +1588,36 @@ function extractDateFromQuestion(question, today) {
   if (m) return `${base.getFullYear()}-${String(m[1]).padStart(2, "0")}-${String(m[2]).padStart(2, "0")}`;
 
   return null;
+}
+
+// 文字起こしの時間インデックスを作る。
+// ファイル名 "YYYY-MM-DD_HH.txt" の日付・時刻を履修時間割（曜日×時限）と突き合わせ、
+// その時間帯の授業名をラベルとして付ける（例: 2026-07-08_13.txt →「水 統計学」）。
+// Gemini が「Aの授業の録音はどのファイルか」を時間から特定できるようにするため。
+const WEEKDAY_CHARS = ["日", "月", "火", "水", "木", "金", "土"];
+// 時限の既定時間帯（start_time 未登録の科目用。早稲田の時限）。
+const PERIOD_HOURS = { 1: [8, 10], 2: [10, 12], 3: [13, 14], 4: [15, 16], 5: [17, 18], 6: [18, 20] };
+function buildTranscriptIndex(files, courses) {
+  return (files || []).map((f) => {
+    const m = String(f.filename || "").match(/^(\d{4})-(\d{2})-(\d{2})_(\d{1,2})/);
+    let label = "";
+    if (m) {
+      const wd = WEEKDAY_CHARS[new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getDay()];
+      const hour = Number(m[4]);
+      const hit = (courses || []).find((c) => {
+        if (c.day !== wd) return false;
+        if (c.start_time) {
+          const sh = Number(String(c.start_time).split(":")[0]);
+          const eh = c.end_time ? Number(String(c.end_time).split(":")[0]) : sh + 1;
+          return hour >= sh && hour <= eh;
+        }
+        const range = PERIOD_HOURS[c.period];
+        return range ? hour >= range[0] && hour <= range[1] : false;
+      });
+      label = hit ? `${wd} ${hit.name}` : wd;
+    }
+    return { filename: f.filename, chars: f.chars, label };
+  });
 }
 
 // "#3" やタスク内容の一部からタスクを特定する。
