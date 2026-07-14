@@ -512,7 +512,7 @@ async function processOne(account) {
   console.log(`[${account.email}] ジョブ #${job.jobId} を取得: ${job.filename} (${job.quality || "high"})`);
   try {
     filePath = await downloadJobFile(account, job);
-    const text = await localTranscribe(filePath, job.quality || "high");
+    const text = (await localTranscribe(filePath, job.quality || "high")) || "本文なし";
     const result = await postJson(account, "/api/client/jobs/result", { jobId: job.jobId, text });
     statusOf(account.email).completed += 1;
     updateStatus(account.email, {
