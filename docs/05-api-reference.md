@@ -87,7 +87,7 @@ X-Filename: 2026-07-13_18.wav
 
 ### GET /api/audio/jobs — ジョブ状況
 
-`?active=1` を付けると **未処理(queued)・処理中(processing)・失敗(error) のみ**返す
+`?active=1` を付けると **待機中(queued)・処理中(processing)・失敗(error) のみ**返す
 （ダッシュボードはこれを使う。完了分は文字起こし一覧側で見る）。`?limit=30` も可。
 
 ```json
@@ -102,6 +102,7 @@ X-Filename: 2026-07-13_18.wav
       "error": null,
       "transcript_id": null,
       "claimed_by": 4,
+      "attempts": 1,
       "worker_name": "研究室デスクトップ",
       "created_at": "2026-07-13 18:00:01",
       "updated_at": "2026-07-13 18:00:15"
@@ -109,6 +110,26 @@ X-Filename: 2026-07-13_18.wav
   ]
 }
 ```
+
+`attempts` は処理を試みた回数（claim のたびに +1）。失敗しても上限
+（`AUDIO_MAX_ATTEMPTS`、既定3回）までは自動で queued に戻り再割り振りされる。
+`error` には最後の失敗理由が残る（再キュー中でも参照できる。成功時にクリア）。
+
+### POST /api/audio/jobs/:id/retry — 失敗ジョブの再試行
+
+`error` で保留されたジョブを待機列（queued）に戻す。`attempts` は 0 に戻り、
+また上限回数まで自動再試行される。音声ファイルは done になるまでサーバーに
+残っているので、失敗後いつでも再試行できる。
+
+```json
+{ "ok": true }
+```
+
+| status | 意味 |
+| --- | --- |
+| 400 | 失敗状態（error）のジョブではない |
+| 404 | ジョブが存在しない / 他ユーザーのジョブ |
+| 410 | 音声ファイルが消えている（再試行不可） |
 
 ### GET /api/audio/workers — 処理PC一覧（ダッシュボードのPC選択画面用）
 

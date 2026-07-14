@@ -36,6 +36,9 @@
 3. **ダウンロード** — ワーカーが `POST /api/client/jobs/download` で音声本体を取得。
 4. **文字起こし** — ワーカーPC上で `client/stt/transcribe.py`（faster-whisper）が実行される。
 5. **結果送信** — `POST /api/client/jobs/result` にテキストを返す。サーバーは `transcripts` テーブルへ保存（同名ファイルは追記）。
+   音声ファイルはここで成功（done）して初めて削除される。**処理に失敗した場合は上限
+   （`AUDIO_MAX_ATTEMPTS`、既定3回）まで即座に queued に戻して再割り振り**し、
+   上限を超えたら error で保留する（ファイルは残り、ダッシュボードの「再試行」で戻せる）。
 6. **Gemini解析** — ジョブ所有者が自動解析ON（`users.gemini_auto=1`、既定）なら、
    本文から課題・予定・要約を抽出して `tasks` へ登録し、日次要約も更新する。
    OFF ならスキップされ、ダッシュボードの「解析する」ボタンで手動実行する。

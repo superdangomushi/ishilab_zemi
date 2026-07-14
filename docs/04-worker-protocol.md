@@ -229,7 +229,13 @@ Content-Length: 10485760
 - `filename` … 保存された文字起こしのファイル名（`yyyy-MM-dd_HH.txt`。音声名から拡張子を差し替え）。
   同名が既にあれば**追記**される（同じ時間帯の複数録音を消さないため）。
 - 無音などで本文が空だった場合は `{"ok": true, "status": "done", "empty": true, "transcriptId": null}`。
-- エラー報告を受理した場合は `{"ok": true, "status": "error"}`。
+- エラー報告を受理した場合は `{"ok": true, "status": "queued"}` または `{"ok": true, "status": "error"}`。
+  - `queued` … 試行回数（attempts）が上限（`AUDIO_MAX_ATTEMPTS`、既定3回）未満だったので、
+    サーバーがジョブを**即座に待機列へ戻した**。次の claim（10秒ポーリング。失敗直後のワーカーは
+    0.5秒後に再ポーリングする）で同じPCまたは別のPCがすぐ再試行する。
+  - `error` … 上限に達したので保留。音声ファイルはサーバーに残り、ユーザーが
+    ダッシュボードの「再試行」で待機列に戻せる。
+  - どちらの場合もワーカー側での追加対応は不要（次のポーリングに進むだけでよい）。
 
 このあとサーバー側では（ジョブ所有者の `gemini_auto` がONなら）Gemini解析→タスク登録→日次要約更新が走る。
 詳細は [07-gemini-pipeline.md](07-gemini-pipeline.md)。

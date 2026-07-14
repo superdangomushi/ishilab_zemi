@@ -78,7 +78,7 @@
 | 345 | `loginWithPassword(email, password)` — `/api/login` |
 | 373 | **`postJson(account, path, body)`** — authBodyを合成してPOST。サーバーの `code`（unregistered等）を `Error.code` に引き継ぐ |
 | 400 | **`downloadJobFile(account, job)`** — `POST /api/client/jobs/download`（JSON→バイナリstream） |
-| 416 | `reportError(account, job, error)` — 失敗を `jobs/result` に `{jobId, error}` で報告 |
+| 416 | `reportError(account, job, error)` — 失敗を `jobs/result` に `{jobId, error}` で報告。サーバーは上限（既定3回）までは即 queued に戻して再割り振りするので、クライアント側の追加対応は不要 |
 
 ### 登録フェーズとジョブ処理（427〜580行あたり）
 

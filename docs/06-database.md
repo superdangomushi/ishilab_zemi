@@ -35,16 +35,30 @@ audio_jobs ──claimed_by──→ audio_workers ←──worker_id── audi
 | --- | --- | --- |
 | `email` | | ジョブ所有者（音声をアップロードしたユーザー） |
 | `filename` | | 元のWAVファイル名（サニタイズ済み） |
-| `stored_path` | VARCHAR(1024) | サーバー上の保存パス（`uploads/audio/`）。**処理完了で物理削除** |
+| `stored_path` | VARCHAR(1024) | サーバー上の保存パス（`uploads/audio/`）。**成功（done）時のみ物理削除**。error でも保持され、手動再試行に使う |
 | `mime` / `size_bytes` | | |
-| `status` | VARCHAR(16) | `queued` → `processing` → `done` / `error` |
-| `error` | TEXT | 失敗理由（ワーカーからの報告、最大1000文字） |
+| `status` | VARCHAR(16) | `queued` → `processing` → `done` / `error`。失敗しても上限までは自動で `queued` に戻る（下記） |
+| `error` | TEXT | 最後の失敗理由（ワーカーからの報告、最大1000文字）。再キュー中も残り、成功時にクリア |
 | `transcript_id` | INT | 完了時に紐付く transcripts.id |
 | `claimed_by` | INT | **claimしたワーカー（audio_workers.id）**。取違防止の照合キー。再キューでNULLに戻る |
+| `attempts` | INT 既定0 | 処理を試みた回数。**claim のたびに +1**。失敗時の自動再試行の上限判定に使う |
 | `updated_at` | | ハートビート（touchAudioJob）で進む。`AUDIO_WORKER_STALE_MIN` 分止まると再キュー対象 |
 
-claim は `UPDATE ... SET id=LAST_INSERT_ID(id), status='processing', claimed_by=? WHERE status='queued' ... ORDER BY id ASC LIMIT 1`
+claim は `UPDATE ... SET id=LAST_INSERT_ID(id), status='processing', claimed_by=?, attempts=attempts+1 WHERE status='queued' ... ORDER BY id ASC LIMIT 1`
 の1文で行うため、複数ワーカーが同時に来ても同じジョブは二重に渡らない。
+
+### 失敗時の自動再試行（failAudioJob）
+
+ワーカーがエラーを報告する（または結果保存に失敗する）と `failAudioJob` が走る:
+
+- `attempts < AUDIO_MAX_ATTEMPTS`（環境変数、既定3）→ `status='queued', claimed_by=NULL` に戻し、
+  次の claim で**即座に別のPC（または同じPC）へ再割り振り**される
+- 上限に達したら `status='error'` で保留。音声ファイルは消さないので、
+  ダッシュボードの「再試行」（`POST /api/audio/jobs/:id/retry` → `retryAudioJob`。
+  `attempts=0` に戻す）でいつでも待機列に戻せる
+
+なお stale 再キュー（`requeueStaleAudioJobs`）はワーカー停止とみなした振り直しであり、
+失敗回数の上限判定はしない（attempts は claim 時に加算されるので次の claim で +1 される）。
 
 ## audio_workers — ワーカーPC（クライアント）
 

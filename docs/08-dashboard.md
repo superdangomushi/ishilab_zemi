@@ -54,9 +54,13 @@ JS関数はすべて `renderDashboard()` 内の `<script>` にある。
    名前変更（`renameWorker()`）、削除（`deleteWorker()`）。
    他ユーザー提供のglobal PCは初期チェック無し（オプトイン）。
    CPU/メモリ/GPUのメーターは `meterCell()`（15秒より古いメトリクスは「—」）。
-3. **未処理・処理中の音声** — `loadAudioJobs()`（`GET /api/audio/jobs?active=1`）。
-   queued=未処理 / processing=処理中 / error=失敗 のみ表示。**完了した音声は出ない**
+3. **未完了の音声（処理中・待機中・失敗）** — `loadAudioJobs()`（`GET /api/audio/jobs?active=1&limit=100`）。
+   processing=処理中 / queued=待機中 / error=失敗 を**状態別の `<details>` 折りたたみ**で表示
+   （見出しに件数。開閉状態は `audioJobsOpen` に覚えて15秒ごとの自動更新でも維持。
+   失敗は件数が嵩みやすいので初期状態では畳んである）。**完了した音声は出ない**
    （完了分は下の履歴に文字起こしとして現れる）。未完了がある間は15秒ごとに自動更新。
+   失敗ジョブの行には**「再試行」ボタン**（`retryAudioJob()` → `POST /api/audio/jobs/:id/retry`）。
+   2回目以降の試行は「N回目」と表示される（自動再試行の仕組みは docs/06 参照）。
 4. **文字起こしの履歴** — 一覧は `loadTranscripts()` → `renderTranscripts()`。
    - ファイル名絞り込み（`#trName`、入力のたび）
    - 解析済み/未解析フィルタ（`#trFilter`）
