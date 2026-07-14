@@ -10,12 +10,12 @@
 //   ask(email, question, ctx)    ... 蓄積データを文脈に、AIアシスタントとして自然文で回答＋必要なら操作コマンドを返す
 //
 // 環境変数:
-//   GEMINI_MODEL ... 使用モデル（既定 gemini-2.5-flash。サーバー共通）
+//   GEMINI_MODEL ... 使用モデル（既定 gemini-2.5-flash-lite。サーバー共通）
 
 const db = require("./db");
 const { decryptCred } = require("./cred");
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 const ENDPOINT = (model) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 

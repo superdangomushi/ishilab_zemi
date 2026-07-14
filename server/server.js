@@ -835,6 +835,39 @@ app.delete("/api/gemini-key", async (req, res) => {
   }
 });
 
+// ---- Gemini 自動解析の on/off（ユーザーごと） ----
+// off にすると、文字起こしの保存時に課題/予定抽出・要約が自動では走らず、
+// ダッシュボードの「解析する」ボタンを押したときだけ実行される。
+
+app.get("/api/gemini-auto", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const enabled = await db.getGeminiAuto(account.email);
+    res.json({ ok: true, enabled });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
+app.post("/api/gemini-auto", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ ok: false, error: "enabled を true/false で指定してください" });
+  }
+  try {
+    const n = await db.setGeminiAuto(account.email, enabled);
+    if (!n) {
+      return res.status(400).json({ ok: false, error: "このアカウントでは設定を保存できません（Web登録のアカウントでログインしてください）" });
+    }
+    res.json({ ok: true, enabled });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
 app.post("/api/moodle", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
@@ -1026,49 +1059,23 @@ app.post("/api/audio", heavyLimiter, async (req, res) => {
   }
 });
 
-// 音声ジョブの処理状況一覧（queued/processing/done/error）。
+// 音声ジョブの処理状況一覧。active=1 で未処理（queued）・処理中（processing）・
+// 失敗（error）だけに絞る（ダッシュボードはこちらを使う。完了分は表示しない）。
 app.get("/api/audio/jobs", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   try {
-    const jobs = await db.listAudioJobs(account.email, Number(req.query.limit) || 30);
+    const activeOnly = req.query.active === "1" || req.query.active === "true";
+    const jobs = await db.listAudioJobs(account.email, { limit: Number(req.query.limit) || 30, activeOnly });
     res.json({ ok: true, jobs });
   } catch (e) {
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
-// ワーカーPC（クライアント）のID。サーバーが audio_workers で自動採番し、
-// claim レスポンスで通知する。新クライアントは以後 X-Worker-Id で送り返して
-// くるが、旧クライアントは何も送らないため接続元IPで同一PCを推定する。
-function workerIdFromReq(req) {
-  const n = Number(String(req.get("x-worker-id") || "").trim());
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-// 新クライアントが名乗るPC名（ホスト名）。ワーカー一覧の表示名に使う。
-function workerNameFromReq(req) {
-  const raw = String(req.get("x-worker-name") || "").replace(/[^\x20-\x7E]/g, "").trim();
-  return raw ? raw.slice(0, 100) : null;
-}
-
-// 新クライアントが申告する公開範囲（global/private）。クライアントUIで選択される。
-// 旧クライアントはヘッダーを送らないので null（サーバー側の既存値を維持）。
-function workerModeFromReq(req) {
-  const raw = String(req.get("x-worker-mode") || "").trim().toLowerCase();
-  return raw === "global" || raw === "private" ? raw : null;
-}
-
 function clientIpOf(req) {
   const ip = String(req.ip || req.socket?.remoteAddress || "").trim().slice(0, 64);
   return ip || null;
-}
-
-// 旧mainクライアントかどうか。新クライアントは X-Worker-Mode を常に送り、
-// 多くの場合 X-Worker-Name も送る。どちらも無い接続だけを旧クライアントとみなし、
-// 接続元IPによる同一PC推定（resolveAudioWorker の legacy 動作）を許す。
-function isLegacyWorkerReq(req) {
-  return !String(req.get("x-worker-mode") || "").trim() && !String(req.get("x-worker-name") || "").trim();
 }
 
 // 音声を処理するクライアントPCの一覧。ユーザーはこの中から処理させるPCを
@@ -1151,69 +1158,136 @@ app.delete("/api/audio/workers/:id", async (req, res) => {
   }
 });
 
-// 外部PCワーカー用: 自分のアカウントの queued 音声ジョブを1件確保する。
-// 接続してきたPCを audio_workers に自動登録し、割り振ったIDをレスポンスで
-// 知らせる。ユーザーが許可したPCにだけジョブを渡す。複数のワーカーPCが
-// 同時にポーリングしても、claim は1件ずつ原子的に確保されるため、
-// 手の空いたPCから順にジョブが分散される。
-app.post("/api/audio/worker/claim", async (req, res) => {
-  const account = await authFromReq(req);
-  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
-  try {
-    const worker = await db.resolveAudioWorker(account.email, {
-      id: workerIdFromReq(req),
-      ip: clientIpOf(req),
-      name: workerNameFromReq(req),
-      mode: workerModeFromReq(req),
-      legacy: isLegacyWorkerReq(req),
+// =====================================================================
+// 音声ワーカークライアント用 JSON API（/api/client/*）
+//
+// すべて POST + JSON ボディ。毎リクエストに認証情報（auth.email / auth.token）と、
+// クライアントが初回起動時に自分で生成した UUID（clientId）を含める。
+// 旧ヘッダー方式（X-Worker-* / 接続元IPによる同一PC推定）は廃止した:
+// なりすましたクライアントが音声を取得できないよう、
+//   - clientId は登録済みかつ認証アカウントの所有であること
+//   - ダウンロード/結果送信は「その clientId のワーカーが claim したジョブ」に限ること
+// をすべてのエンドポイントで検証する。
+// =====================================================================
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ワーカークライアント用: JSON ボディの auth からアカウントを照合する。
+async function authFromJsonBody(req) {
+  const a = req.body?.auth || {};
+  return resolveAccount(String(a.email || "").trim(), String(a.token || "").trim());
+}
+
+function clientIdFromBody(req) {
+  const raw = String(req.body?.clientId || "").trim().toLowerCase();
+  return UUID_RE.test(raw) ? raw : null;
+}
+
+// 認証 + clientId から登録済みワーカーを特定する共通処理。
+// 失敗時はレスポンスを書いて null を返す（呼び出し側は return するだけ）。
+async function requireClientWorker(req, res) {
+  const account = await authFromJsonBody(req);
+  if (!account) {
+    res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
+    return null;
+  }
+  const clientId = clientIdFromBody(req);
+  if (!clientId) {
+    res.status(400).json({ ok: false, error: "clientId（UUID）をJSONボディで指定してください" });
+    return null;
+  }
+  const worker = await db.getAudioWorkerByUuid(account.email, clientId);
+  if (!worker) {
+    res.status(403).json({
+      ok: false,
+      code: "unregistered",
+      error: "このPCは未登録です。クライアントの初回登録（/api/client/register）をやり直してください",
     });
+    return null;
+  }
+  return { account, worker };
+}
+
+// クライアント初回起動の「アカウント作成フェーズ」: クライアントが生成した UUID と
+// ユーザーが決めた表示名でこのPCを登録する。再実行は表示名・モードの更新になる。
+// UUID が他アカウントで使用済みなら 409（クライアント側で再生成して再登録する）。
+app.post("/api/client/register", async (req, res) => {
+  const account = await authFromJsonBody(req);
+  if (!account) return res.status(401).json({ ok: false, error: "アカウント情報が一致しません" });
+  const clientId = clientIdFromBody(req);
+  if (!clientId) return res.status(400).json({ ok: false, error: "clientId（UUID形式）を指定してください" });
+  const name = String(req.body?.name || "").trim().slice(0, 255);
+  if (!name) return res.status(400).json({ ok: false, error: "このPCの表示名（name）を指定してください" });
+  const mode = req.body?.mode === "global" ? "global" : "private";
+  try {
+    const worker = await db.registerAudioWorker(account.email, clientId, { name, mode, ip: clientIpOf(req) });
+    if (worker.conflict) {
+      return res.status(409).json({
+        ok: false,
+        code: "uuid_conflict",
+        error: "このIDは他のアカウントで使用されています。クライアント側でIDを再生成してください",
+      });
+    }
+    console.log(`ワーカー登録: ${account.email} clientId=${clientId} name=${name} (${worker.mode || mode})`);
+    res.json({
+      ok: true,
+      client: { clientId, name: worker.name, mode: worker.mode || "private", allowed: Boolean(worker.allowed) },
+    });
+  } catch (e) {
+    console.error("ワーカー登録に失敗:", e.message);
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
+// queued 音声ジョブを1件確保する。ユーザーが許可したPCにだけジョブを渡す。
+// 複数のワーカーPCが同時にポーリングしても claim は1件ずつ原子的に確保される。
+app.post("/api/client/claim", async (req, res) => {
+  try {
+    const ctx = await requireClientWorker(req, res);
+    if (!ctx) return;
+    const { account, worker } = ctx;
+    // クライアントが申告する現在のモード。変わっていればサーバー側にも反映する。
+    const declaredMode = req.body?.mode === "global" || req.body?.mode === "private" ? req.body.mode : null;
+    if (declaredMode && declaredMode !== worker.mode) {
+      await db.setAudioWorkerMode(worker.id, declaredMode);
+      worker.mode = declaredMode;
+    }
     const base = {
       ok: true,
-      workerId: worker.id,
-      workerName: worker.name,
-      mode: worker.mode || "private",
-      allowed: Boolean(worker.allowed),
+      client: { clientId: worker.client_uuid, name: worker.name, mode: worker.mode || "private", allowed: Boolean(worker.allowed) },
     };
     if (!worker.allowed) return res.json({ ...base, job: null });
-    // global モードのPCは、所有者本人とそのPCの利用を明示的に許可したユーザーの
-    // ジョブを処理対象にする（未設定ユーザーは claim 時に除外される）。ただしリクエスト自体が
-    // global を申告している場合に限る: 旧クライアント（ヘッダー無し）は他ユーザーの
-    // ジョブをダウンロードできず滞留させてしまうため、常に本人のジョブだけを渡す。
-    const global = worker.mode === "global" && workerModeFromReq(req) === "global";
+    // global のPCは、所有者本人と、そのPCの利用を明示的に許可したユーザーの
+    // ジョブだけを処理対象にする（オプトイン。未設定ユーザーのジョブは流れない）。
+    const global = worker.mode === "global" && declaredMode === "global";
     const job = await audio.claimRemoteJob(account.email, worker.id, { global });
     if (!job) return res.json({ ...base, job: null });
     res.json({
       ...base,
       job: {
-        ...job,
-        downloadPath: `/api/audio/worker/jobs/${job.id}/file`,
-        resultPath: `/api/audio/worker/jobs/${job.id}/result`,
+        jobId: job.id,
+        filename: job.filename,
+        mime: job.mime,
+        sizeBytes: job.sizeBytes,
+        quality: job.quality,
       },
     });
   } catch (e) {
-    console.error("外部音声ワーカーのジョブ確保に失敗:", e.message);
+    console.error("ワーカーのジョブ確保に失敗:", e.message);
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
-// 外部PCワーカー用: リソース使用率（CPU/メモリ/GPU）の報告。クライアントが
-// 3秒ごとに送ってくる。ダッシュボードの「処理に使うPC」選択画面に表示する。
-// レスポンスで割り振り済みIDを知らせるので、初回接続でもPC登録が完了する。
-app.post("/api/audio/worker/metrics", async (req, res) => {
-  const account = await authFromReq(req);
-  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+// リソース使用率（CPU/メモリ/GPU）の報告と処理中ジョブのハートビート。
+app.post("/api/client/metrics", async (req, res) => {
   const pct = (v) => {
     const n = Number(v);
     return Number.isFinite(n) ? Math.min(Math.max(n, 0), 100) : null;
   };
   try {
-    const worker = await db.resolveAudioWorker(account.email, {
-      id: workerIdFromReq(req),
-      ip: clientIpOf(req),
-      name: workerNameFromReq(req),
-      mode: workerModeFromReq(req),
-      legacy: isLegacyWorkerReq(req),
-    });
+    const ctx = await requireClientWorker(req, res);
+    if (!ctx) return;
+    const { worker } = ctx;
     await db.updateAudioWorkerMetrics(worker.id, {
       cpu: pct(req.body?.cpu),
       mem: pct(req.body?.mem),
@@ -1225,19 +1299,25 @@ app.post("/api/audio/worker/metrics", async (req, res) => {
     if (Number.isInteger(activeJobId) && activeJobId > 0) {
       await db.touchAudioJob(activeJobId, worker.id);
     }
-    res.json({ ok: true, workerId: worker.id, workerName: worker.name, mode: worker.mode || "private" });
+    res.json({ ok: true });
   } catch (e) {
-    console.error("外部音声ワーカーのメトリクス保存に失敗:", e.message);
+    console.error("ワーカーのメトリクス保存に失敗:", e.message);
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
-// 外部PCワーカー用: claim 済みジョブの音声本体をダウンロードする。
-app.get("/api/audio/worker/jobs/:id/file", async (req, res) => {
-  const account = await authFromReq(req);
-  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+// claim 済みジョブの音声本体をダウンロードする。認証情報 + clientId + jobId を
+// JSON で受け、その clientId のワーカーが自分で claim したジョブ以外は 404。
+app.post("/api/client/jobs/download", async (req, res) => {
   try {
-    const job = await audio.getClaimedJob(account.email, req.params.id, workerIdFromReq(req));
+    const ctx = await requireClientWorker(req, res);
+    if (!ctx) return;
+    const { account, worker } = ctx;
+    const jobId = Number(req.body?.jobId);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      return res.status(400).json({ ok: false, error: "jobId を指定してください" });
+    }
+    const job = await audio.getClaimedJob(account.email, jobId, worker.id);
     if (!job) return res.status(404).json({ ok: false, error: "処理中の音声ジョブが見つかりません" });
     const filename = encodeURIComponent(job.filename || `audio-${job.id}.wav`);
     res.setHeader("Content-Type", job.mime || "application/octet-stream");
@@ -1250,29 +1330,46 @@ app.get("/api/audio/worker/jobs/:id/file", async (req, res) => {
     }
     res.sendFile(path.resolve(job.stored_path));
   } catch (e) {
-    console.error("外部音声ワーカーの音声取得に失敗:", e.message);
+    console.error("ワーカーの音声取得に失敗:", e.message);
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
 
-// 外部PCワーカー用: ローカルPCで文字起こしした結果を返す。
-app.post("/api/audio/worker/jobs/:id/result", async (req, res) => {
-  const account = await authFromReq(req);
-  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
-  const text = typeof req.body?.text === "string" ? req.body.text : "";
-  const error = req.body?.error ? String(req.body.error) : "";
-  if (!text && !error) {
-    return res.status(400).json({ ok: false, error: "text または error を指定してください" });
-  }
+// ローカルPCで文字起こしした結果（text）またはエラーを返す。
+// download と同じ厳格な照合（claim したワーカー本人のみ）を通る。
+app.post("/api/client/jobs/result", async (req, res) => {
   try {
-    const result = await audio.completeRemoteJob(account.email, req.params.id, { text, error, workerId: workerIdFromReq(req) });
+    const ctx = await requireClientWorker(req, res);
+    if (!ctx) return;
+    const { account, worker } = ctx;
+    const jobId = Number(req.body?.jobId);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      return res.status(400).json({ ok: false, error: "jobId を指定してください" });
+    }
+    const text = typeof req.body?.text === "string" ? req.body.text : "";
+    const error = req.body?.error ? String(req.body.error) : "";
+    if (!text && !error) {
+      return res.status(400).json({ ok: false, error: "text または error を指定してください" });
+    }
+    const result = await audio.completeRemoteJob(account.email, jobId, { text, error, workerId: worker.id });
     if (!result.ok) return res.status(result.status || 500).json({ ok: false, error: result.error });
     res.json(result);
   } catch (e) {
-    console.error("外部音声ワーカーの結果保存に失敗:", e.message);
+    console.error("ワーカーの結果保存に失敗:", e.message);
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
+
+// Gemini 解析（課題/予定抽出 → タスク登録 → 変更/取消の反映）の共通パイプライン。
+// 自動解析（/api/upload）と手動解析（/api/transcripts/:id/analyze）の両方から使う。
+async function runAnalysisPipeline(email, transcriptId, content) {
+  const result = await gemini.analyze(email, content);
+  await db.saveAnalysis(transcriptId, result.kadai, result.yotei, result.summary);
+  await db.upsertTasks(email, result.tasks, transcriptId);
+  const updated = await db.applyTaskUpdates(email, result.updates);
+  const canceled = await db.cancelTasks(email, result.cancellations);
+  return { ...result, updated, canceled };
+}
 
 // 文字起こしテキストの受信 → MySQL に保存 → Gemini で課題/予定/要約を抽出。
 app.post("/api/upload", heavyLimiter, async (req, res) => {
@@ -1299,19 +1396,17 @@ app.post("/api/upload", heavyLimiter, async (req, res) => {
   console.log(`受信: ${account.email} -> ${safeName} (${content.length} 文字) を DB 保存`);
 
   // Gemini で「課題」「予定」「要約」を抽出して保存。失敗してもアップロードは成功扱い。
+  // 自動解析 off のユーザーはスキップ（「解析する」ボタンでの手動実行に任せる）。
   let analyzed = false;
   let taskCount = 0;
-  if (id != null && (await gemini.isConfiguredFor(account.email))) {
+  const geminiAuto = await db.getGeminiAuto(account.email).catch(() => true);
+  if (id != null && geminiAuto && (await gemini.isConfiguredFor(account.email))) {
     try {
-      const result = await gemini.analyze(account.email, content);
-      await db.saveAnalysis(id, result.kadai, result.yotei, result.summary);
-      await db.upsertTasks(account.email, result.tasks, id);
-      const updated = await db.applyTaskUpdates(account.email, result.updates);
-      const canceled = await db.cancelTasks(account.email, result.cancellations);
+      const result = await runAnalysisPipeline(account.email, id, content);
       taskCount = result.tasks.length;
       analyzed = true;
       console.log(
-        `解析: ${safeName} -> タスク ${taskCount} 件 / 変更 ${updated.length} 件 / 削除 ${canceled.length} 件 / ` +
+        `解析: ${safeName} -> タスク ${taskCount} 件 / 変更 ${result.updated.length} 件 / 削除 ${result.canceled.length} 件 / ` +
           `要約 ${result.summary ? "有" : "無"}`
       );
     } catch (e) {
@@ -1330,14 +1425,45 @@ app.post("/api/upload", heavyLimiter, async (req, res) => {
 
 // ログイン中アカウント本人の文字起こし一覧を返す。
 // サーバー文字起こしモードでは本文が端末に残らないため、Android アプリからも最新記録を読めるようにする。
+// contains=文字列 で「本文にその文字列を含むファイル」だけに絞れる（履歴画面の全文検索用）。
 app.get("/api/transcripts", async (req, res) => {
   const account = await authFromReq(req);
   if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
   const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 200);
+  const contains = String(req.query.contains || "").trim().slice(0, 200) || null;
   try {
-    const transcripts = await db.listTranscriptsByEmail(account.email, limit);
+    const transcripts = await db.listTranscriptsByEmail(account.email, limit, { contains });
     res.json({ ok: true, transcripts });
   } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
+// 手動解析: 自動解析を off にしているユーザーが「解析する」ボタンで実行する
+// （on のユーザーが解析し直すのにも使える）。要約・課題/予定抽出・タスク登録まで走る。
+app.post("/api/transcripts/:id/analyze", heavyLimiter, async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const row = await db.getTranscriptForEmail(account.email, req.params.id);
+    if (!row) return res.status(404).json({ ok: false, error: "見つかりません" });
+    if (!(await gemini.isConfiguredFor(account.email))) {
+      return res.status(400).json({ ok: false, error: gemini.NO_KEY_MESSAGE });
+    }
+    const result = await runAnalysisPipeline(account.email, row.id, row.content);
+    console.log(
+      `手動解析: ${account.email} ${row.filename} -> タスク ${result.tasks.length} 件 / ` +
+        `変更 ${result.updated.length} 件 / 削除 ${result.canceled.length} 件`
+    );
+    res.json({
+      ok: true,
+      analyzed: true,
+      tasks: result.tasks.length,
+      summary: result.summary || "",
+    });
+  } catch (e) {
+    if (handleBadGeminiKey(res, e)) return;
+    console.error(`手動解析に失敗 (${account.email}):`, e.message);
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
 });
@@ -2244,15 +2370,41 @@ function renderDashboard() {
         <h3 style="font-size:.95rem; margin:.2rem 0 .4rem">処理に使うPC（クライアント）</h3>
         <p class="muted" style="margin:.2rem 0 .5rem">
           音声を処理させるPCを選べます（複数選択可）。チェックを外したPCには新しいジョブを割り振りません。
-          PCで audio-worker を起動して最初に接続した時に、サーバーがIDを自動で割り振ってここに表示します。
+          PC側クライアントの初回登録（表示名を決めてアカウントに紐付け）が済むと、ここに表示されます。
           他ユーザー提供の global PC は初期状態では使いません。任せてもよい場合だけチェックを入れてください（そのPCにあなたの音声がダウンロードされて処理されます）。
           CPU/メモリ/GPU はクライアントから3秒ごとに届く使用率です。
         </p>
         <div id="audioWorkers" style="margin-bottom:.8rem"><p class="muted">読み込み中…</p></div>
-        <h3 style="font-size:.95rem; margin:.6rem 0 .4rem">ジョブ一覧</h3>
+        <h3 style="font-size:.95rem; margin:.6rem 0 .4rem">未処理・処理中の音声</h3>
+        <p class="muted" style="margin:.2rem 0 .5rem">まだ文字起こしが終わっていない音声だけを表示します（完了した音声は下の履歴に文字起こしとして並びます）。</p>
         <div id="audioJobs"><p class="muted">読み込み中…</p></div>
         <hr>
-        <h2>受信した文字起こしファイル</h2>
+        <h2>文字起こしの履歴</h2>
+        <div style="display:grid; gap:.5rem; margin-bottom:.7rem">
+          <div class="row">
+            <input id="trName" placeholder="ファイル名で絞り込み" oninput="renderTranscripts()" style="flex:1; min-width:180px">
+            <select id="trFilter" onchange="renderTranscripts()" style="width:auto">
+              <option value="all">すべて</option>
+              <option value="analyzed">解析済みのみ</option>
+              <option value="unanalyzed">未解析のみ</option>
+            </select>
+            <select id="trSort" onchange="renderTranscripts()" style="width:auto">
+              <option value="updated-desc">更新が新しい順</option>
+              <option value="updated-asc">更新が古い順</option>
+              <option value="name-desc">ファイル名（新→旧）</option>
+              <option value="name-asc">ファイル名（旧→新）</option>
+              <option value="chars-desc">文字数が多い順</option>
+              <option value="chars-asc">文字数が少ない順</option>
+            </select>
+          </div>
+          <div class="row">
+            <input id="trContains" placeholder="本文にこの文字列を含むファイルを探す（例: ゼミ）"
+                   onkeydown="if(event.key==='Enter')searchTranscripts()" style="flex:1; min-width:180px">
+            <button class="small" onclick="searchTranscripts()">本文検索</button>
+            <button class="ghost small" onclick="clearTranscriptSearch()">解除</button>
+            <span id="trSearchState" class="muted"></span>
+          </div>
+        </div>
         <div id="transcripts"><p class="muted">読み込み中…</p></div>
       </section>
 
@@ -2271,6 +2423,16 @@ function renderDashboard() {
           <button onclick="saveGeminiKey()">登録する</button>
           <button class="ghost" onclick="deleteGeminiKey()">削除</button>
           <span id="geminiKeyState" class="muted"></span>
+        </div>
+        <div style="margin-top:.8rem">
+          <label style="display:flex; align-items:center; gap:.5rem; cursor:pointer; color:var(--ink)">
+            <input type="checkbox" id="geminiAuto" style="width:auto" onchange="saveGeminiAuto(this.checked)">
+            文字起こし完了時に自動で要約・課題/予定の抽出を実行する
+          </label>
+          <p class="muted" style="margin:.3rem 0 0">
+            オフにすると自動では解析されず、「ファイル」タブの履歴で各ファイルの「解析する」ボタンを押したときだけ実行されます。
+          </p>
+          <span id="geminiAutoState" class="muted"></span>
         </div>
         <hr>
         <h3 style="font-size:.95rem; margin:.2rem 0 .6rem">パスワード変更</h3>
@@ -2660,7 +2822,7 @@ function renderDashboard() {
       if(j.ok){ $('pwState').textContent='✓ 変更しました'; $('curpw').value=$('newpw').value=''; }
       else $('pwState').textContent = '✗ ' + (j.error||'変更失敗');
     }
-    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioWorkers(); loadAudioJobs(); loadTranscripts(); loadGoogle(); loadChatHistory(); loadGeminiKey(); }
+    function loadAll(){ loadTasks(); loadSummary(); loadMoodle(); loadWaseda(); loadDocs(); loadAudioWorkers(); loadAudioJobs(); loadTranscripts(); loadGoogle(); loadChatHistory(); loadGeminiKey(); loadGeminiAuto(); }
 
     // ---- Google カレンダー連携（Web OAuth） ----
     let googleAccounts = [];
@@ -2821,24 +2983,24 @@ function renderDashboard() {
       loadAudioWorkers();
     }
 
-    // ---- 音声ジョブ状況 ----
-    const AUDIO_STATUS = { queued:'待機中', processing:'処理中', done:'完了', error:'失敗' };
+    // ---- 音声ジョブ状況（未処理・処理中・失敗のみ表示） ----
+    const AUDIO_STATUS = { queued:'未処理', processing:'処理中', error:'失敗' };
     async function loadAudioJobs(){
       if(!auth.email) return;
       if(audioJobsTimer) clearTimeout(audioJobsTimer);
       audioJobsTimer = null;
       try {
-        const r = await fetch('/api/audio/jobs',{headers:headers()});
+        const r = await fetch('/api/audio/jobs?active=1',{headers:headers()});
         const j = await r.json();
         if(!j.ok){ $('audioJobs').innerHTML='<p class="muted">'+escapeHtml(j.error||'取得失敗')+'</p>'; return; }
-        if(!j.jobs.length){ $('audioJobs').innerHTML='<p class="muted">音声のアップロードはまだありません。</p>'; return; }
+        if(!j.jobs.length){ $('audioJobs').innerHTML='<p class="muted">未処理・処理中の音声はありません。</p>'; return; }
         const rows = j.jobs.map(a => '<tr><td>'+escapeHtml(a.filename)+'</td>'+
           '<td class="num">'+Math.round((a.size_bytes||0)/1024/1024*10)/10+' MB</td>'+
           '<td>'+(AUDIO_STATUS[a.status]||a.status)+(a.error?'<div class="muted">'+escapeHtml(a.error)+'</div>':'')+'</td>'+
           '<td>'+(a.worker_name ? escapeHtml(a.worker_name) : (a.claimed_by ? '#'+a.claimed_by : ''))+'</td>'+
           '<td>'+new Date(a.updated_at).toLocaleString('ja-JP')+'</td></tr>').join('');
         $('audioJobs').innerHTML = '<table><thead><tr><th>ファイル</th><th>サイズ</th><th>状態</th><th>処理PC</th><th>更新</th></tr></thead><tbody>'+rows+'</tbody></table>';
-        // 未完了ジョブがあれば少し待って自動更新。
+        // 未完了ジョブがあれば少し待って自動更新（完了すると一覧から消え、履歴側に現れる）。
         if(j.jobs.some(a => a.status==='queued'||a.status==='processing')) audioJobsTimer = setTimeout(loadAudioJobs, 15000);
       } catch(e){}
     }
@@ -3073,6 +3235,26 @@ function renderDashboard() {
       else $('geminiKeyState').textContent = '✗ '+(j.error||'削除失敗');
     }
 
+    // ---- Gemini 自動解析の on/off ----
+    async function loadGeminiAuto(){
+      if(!auth.email) return;
+      try {
+        const r = await fetch('/api/gemini-auto',{headers:headers()});
+        const j = await r.json();
+        if(j.ok) $('geminiAuto').checked = !!j.enabled;
+      } catch(e){}
+    }
+    async function saveGeminiAuto(enabled){
+      try {
+        const r = await fetch('/api/gemini-auto',{method:'POST',headers:headers(),body:JSON.stringify({enabled})});
+        const j = await r.json();
+        $('geminiAutoState').textContent = j.ok
+          ? (enabled ? '✓ 自動解析をオンにしました' : '✓ 自動解析をオフにしました（履歴の「解析する」で手動実行）')
+          : '✗ '+(j.error||'保存失敗');
+        if(!j.ok) loadGeminiAuto();
+      } catch(e){ $('geminiAutoState').textContent = '✗ 通信エラー'; loadGeminiAuto(); }
+    }
+
     // ---- Moodle 連携 ----
     async function loadMoodle(){
       if(!auth.email) return;
@@ -3096,42 +3278,95 @@ function renderDashboard() {
       else $('moodleState').textContent = '✗ '+(j.error||'同期失敗');
     }
 
-    // ---- 文字起こし一覧 ----
+    // ---- 文字起こしの履歴（絞り込み・並び替え・本文検索） ----
+    let allTranscripts = [];
+    let transcriptSearchWord = ''; // 本文検索中の語（空なら通常一覧）
     async function loadTranscripts(){
       if(!auth.email) return;
       try {
-        const r = await fetch('/api/transcripts?limit=100',{headers:headers()});
+        const url = '/api/transcripts?limit=200' +
+          (transcriptSearchWord ? '&contains='+encodeURIComponent(transcriptSearchWord) : '');
+        const r = await fetch(url,{headers:headers()});
         const j = await r.json();
         if(!j.ok){
           $('transcripts').innerHTML = '<p class="muted">'+escapeHtml(j.error||'取得に失敗しました')+'</p>';
           return;
         }
-        const list = Array.isArray(j.transcripts) ? j.transcripts : [];
-        if(!list.length){
-          $('transcripts').innerHTML = '<p class="muted">まだファイルがありません。</p>';
-          return;
-        }
-        const rows = list.map(t => {
-          const analyzed = !!t.analyzed_at;
-          const csvLinks = analyzed
-            ? '<button class="small" onclick="downloadFile(\\'/kadai/'+t.id+'.csv\\', \\'kadai-'+t.id+'.csv\\')">課題CSV</button> ' +
-              '<button class="small" onclick="downloadFile(\\'/yotei/'+t.id+'.csv\\', \\'yotei-'+t.id+'.csv\\')">予定CSV</button>'
-            : '<span class="pending">未解析</span>';
-          return '<tr>'+
-            '<td>'+escapeHtml(t.filename)+'</td>'+
-            '<td class="num">'+(t.chars || 0)+'</td>'+
-            '<td>'+new Date(t.updated_at).toLocaleString('ja-JP')+'</td>'+
-            '<td><button class="small" onclick="viewText('+t.id+')">本文</button> '+
-            '<button class="small" onclick="downloadFile(\\'/download/'+t.id+'\\', '+JSON.stringify(t.filename || ('transcript-'+t.id+'.txt'))+')">DL</button></td>'+
-            '<td>'+csvLinks+'</td>'+
-          '</tr>';
-        }).join('');
-        $('transcripts').innerHTML =
-          '<table><thead><tr><th>ファイル名</th><th>文字数</th><th>更新</th><th></th><th>課題/予定</th></tr></thead>'+
-          '<tbody>'+rows+'</tbody></table>';
+        allTranscripts = Array.isArray(j.transcripts) ? j.transcripts : [];
+        $('trSearchState').textContent = transcriptSearchWord
+          ? '「'+transcriptSearchWord+'」を含む '+allTranscripts.length+' 件'
+          : '';
+        renderTranscripts();
       } catch(e){
         $('transcripts').innerHTML = '<p class="muted">取得に失敗しました。</p>';
       }
+    }
+    async function searchTranscripts(){
+      transcriptSearchWord = $('trContains').value.trim();
+      $('trSearchState').textContent = transcriptSearchWord ? '検索中…' : '';
+      await loadTranscripts();
+    }
+    async function clearTranscriptSearch(){
+      transcriptSearchWord = '';
+      $('trContains').value = '';
+      await loadTranscripts();
+    }
+    function renderTranscripts(){
+      const nameQ = ($('trName')||{}).value ? $('trName').value.trim().toLowerCase() : '';
+      const filter = ($('trFilter')||{}).value || 'all';
+      const sort = ($('trSort')||{}).value || 'updated-desc';
+      let list = allTranscripts.slice();
+      if(nameQ) list = list.filter(t => (t.filename||'').toLowerCase().includes(nameQ));
+      if(filter==='analyzed') list = list.filter(t => !!t.analyzed_at);
+      else if(filter==='unanalyzed') list = list.filter(t => !t.analyzed_at);
+      const upd = t => new Date(t.updated_at).getTime() || 0;
+      const cmp = {
+        'updated-desc': (a,b)=>upd(b)-upd(a),
+        'updated-asc': (a,b)=>upd(a)-upd(b),
+        'name-desc': (a,b)=>String(b.filename||'').localeCompare(String(a.filename||''),'ja'),
+        'name-asc': (a,b)=>String(a.filename||'').localeCompare(String(b.filename||''),'ja'),
+        'chars-desc': (a,b)=>(b.chars||0)-(a.chars||0),
+        'chars-asc': (a,b)=>(a.chars||0)-(b.chars||0),
+      }[sort] || ((a,b)=>upd(b)-upd(a));
+      list.sort(cmp);
+      if(!list.length){
+        $('transcripts').innerHTML = '<p class="muted">'+
+          (allTranscripts.length ? '条件に一致するファイルはありません。' :
+           (transcriptSearchWord ? '「'+escapeHtml(transcriptSearchWord)+'」を含むファイルはありません。' : 'まだファイルがありません。'))+'</p>';
+        return;
+      }
+      const rows = list.map(t => {
+        const analyzed = !!t.analyzed_at;
+        const analyzeBtn = '<button class="ghost small" id="an'+t.id+'" onclick="analyzeTranscript('+t.id+')">'+
+          (analyzed?'再解析':'解析する')+'</button>';
+        const csvLinks = analyzed
+          ? '<button class="small" onclick="downloadFile(\\'/kadai/'+t.id+'.csv\\', \\'kadai-'+t.id+'.csv\\')">課題CSV</button> ' +
+            '<button class="small" onclick="downloadFile(\\'/yotei/'+t.id+'.csv\\', \\'yotei-'+t.id+'.csv\\')">予定CSV</button> '
+          : '<span class="pending">未解析</span> ';
+        return '<tr>'+
+          '<td>'+escapeHtml(t.filename)+'</td>'+
+          '<td class="num">'+(t.chars || 0)+'</td>'+
+          '<td>'+new Date(t.updated_at).toLocaleString('ja-JP')+'</td>'+
+          '<td><button class="small" onclick="viewText('+t.id+')">本文</button> '+
+          '<button class="small" onclick="downloadFile(\\'/download/'+t.id+'\\', '+JSON.stringify(t.filename || ('transcript-'+t.id+'.txt'))+')">DL</button></td>'+
+          '<td>'+csvLinks+analyzeBtn+'</td>'+
+        '</tr>';
+      }).join('');
+      $('transcripts').innerHTML =
+        '<table><thead><tr><th>ファイル名</th><th>文字数</th><th>更新</th><th></th><th>課題/予定</th></tr></thead>'+
+        '<tbody>'+rows+'</tbody></table>';
+    }
+    // 「解析する」ボタン: 自動解析 off のユーザーの手動実行（要約・課題/予定抽出）。
+    async function analyzeTranscript(id){
+      const btn = $('an'+id);
+      if(btn){ btn.disabled = true; btn.textContent = '解析中…'; }
+      try {
+        const r = await fetch('/api/transcripts/'+id+'/analyze',{method:'POST',headers:headers()});
+        const j = await r.json();
+        if(!j.ok){ alert('解析に失敗しました: '+(j.error||'')); }
+        else { loadTasks(); }
+      } catch(e){ alert('解析に失敗しました（通信エラー）'); }
+      await loadTranscripts();
     }
 
     // ---- 本文表示（モーダル） ----

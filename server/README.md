@@ -55,7 +55,7 @@ npm start          # http://localhost:3000
 | `DB_PASSWORD` | （空） | パスワード |
 | `DB_NAME` | `AIHelper` | データベース名 |
 | `PORT` | `3000` | サーバーの待受ポート |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | 使用する Gemini モデル（サーバー共通） |
+| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | 使用する Gemini モデル（サーバー共通） |
 | `LINE_CHANNEL_ACCESS_TOKEN` | （空） | LINE Messaging API のチャネルアクセストークン。未設定なら LINE 送信はスキップ |
 | `REMINDER_INTERVAL_SEC` | `60` | 締切チェックの間隔（秒） |
 | `DAILY_SUMMARY_INTERVAL_MIN` | `300` | 「今日の要約」自動再生成の間隔（分）。`0` で無効 |
@@ -80,12 +80,18 @@ make stt-deps
 npm start
 ```
 
-起動後、`http://127.0.0.1:39123` を開き、公開サーバーURLと処理したいアカウントのメール・パスワードを複数登録する。
+起動後、`http://127.0.0.1:39123` を開き、最初に「クライアント登録」フェーズを行う:
+公開サーバーURLとこのPCの表示名を決め、処理したいアカウントのメール・パスワードでログインすると、
+クライアントがこのPC用のID（UUID）を自動生成し、表示名とともに `POST /api/client/register` で登録する。
 パスワードは `/api/login` に使うだけで、PC側には返ってきたトークンだけを保存する。
 
-ワーカーは既定で10秒ごとに `/api/audio/worker/claim` を呼び、登録済みアカウントと同じ `email + token` の音声ジョブだけを確保する。
-その後 `/api/audio/worker/jobs/:id/file` で音声をダウンロードし、このPCで Whisper 処理を行い、
-`/api/audio/worker/jobs/:id/result` へ JSON で文字起こし結果を返す。ポーリング間隔は
+ワーカーとのやりとりはすべて JSON ベース（`/api/client/*`）で、毎リクエストのボディに
+認証情報（`auth.email` / `auth.token`）と `clientId`（UUID）を含める。登録済みアカウントは
+既定で10秒ごとに `POST /api/client/claim` でジョブを1件確保し、
+`POST /api/client/jobs/download`（JSONリクエスト → WAV応答）で音声をダウンロードして
+このPCで Whisper 処理を行い、`POST /api/client/jobs/result` へ `jobId` と文字起こし結果を返す。
+ダウンロード・結果送信は「その clientId のワーカーが自分で claim したジョブ」しか受け付けないため、
+別クライアントを名乗っても他人の音声は取得できない。ポーリング間隔は
 `AUDIO_WORKER_POLL_SEC=10` で変更できる。
 
 Web の Google 連携を有効にするには、Google Cloud Console で「OAuth クライアント ID（ウェブアプリケーション）」を作成し、
@@ -151,11 +157,16 @@ npm start
 | POST | `/api/login` | アカウント＋トークンの照合（LINE 連携状況も返す） |
 | POST | `/api/upload` | 文字起こし受信 → 保存 → Gemini で課題/予定/要約を抽出 |
 | POST | `/api/audio` | 音声ファイル受信 → 音声ジョブとしてキュー化 |
-| POST | `/api/audio/worker/claim` | 外部PCワーカーが自分の音声ジョブを1件確保 |
-| GET | `/api/audio/worker/jobs/:id/file` | claim 済み音声ジョブの音声本体を取得 |
-| POST | `/api/audio/worker/jobs/:id/result` | 外部PCワーカーが文字起こし結果またはエラーを返す |
-| GET | `/api/transcripts` | ログイン中ユーザーの文字起こし一覧 |
+| GET | `/api/audio/jobs` | 音声ジョブ一覧（`?active=1` で未処理・処理中・失敗のみ） |
+| POST | `/api/client/register` | ワーカーPCのクライアント登録（clientId=UUID + 表示名。初回セットアップ） |
+| POST | `/api/client/claim` | 外部PCワーカーが音声ジョブを1件確保（JSONボディ認証） |
+| POST | `/api/client/jobs/download` | claim 済みジョブの音声本体を取得（`{auth, clientId, jobId}` → バイナリ） |
+| POST | `/api/client/jobs/result` | 文字起こし結果またはエラーを返す（`{auth, clientId, jobId, text\|error}`） |
+| POST | `/api/client/metrics` | ワーカーPCの使用率報告と処理中ジョブのハートビート |
+| GET | `/api/transcripts` | ログイン中ユーザーの文字起こし一覧（`?contains=語` で本文全文検索） |
 | GET | `/api/transcripts/:id` | ログイン中ユーザーの文字起こし本文 |
+| POST | `/api/transcripts/:id/analyze` | 手動でGemini解析（自動解析オフ時の「解析する」ボタン） |
+| GET/POST | `/api/gemini-auto` | Gemini自動解析の on/off（ユーザーごと） |
 | POST | `/api/ask` | AIチャット。回答＋依頼（予定追加・完了化）の実行 |
 | GET | `/api/chat/history` | AIチャット履歴 |
 | GET | `/api/tasks` | 課題・予定の一覧（`?done=1` で完了も含む） |
@@ -173,6 +184,9 @@ npm start
 
 認証は API 共通で、`X-Account-Email` + `Authorization: Bearer <token>` ヘッダで渡す。
 互換性のため一部 POST は JSON ボディの `email` `token` も受け付けるが、URL クエリには載せない。
+音声ワーカー用の `/api/client/*` は例外で、ヘッダーではなく JSON ボディの
+`auth: { email, token }` + `clientId`（登録済みUUID）で認証する。
+旧ヘッダー方式（`X-Worker-*`）と接続元IPによる同一PC推定は廃止した。
 
 ### POST /api/upload
 ```
