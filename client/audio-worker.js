@@ -34,6 +34,7 @@ const METRICS_INTERVAL_MS = Math.max(Number(process.env.AUDIO_WORKER_METRICS_SEC
 const UI_HOST = process.env.AUDIO_WORKER_UI_HOST || "127.0.0.1";
 const UI_PORT = Number(process.env.AUDIO_WORKER_UI_PORT || 39123);
 const WORK_DIR = process.env.AUDIO_WORKER_DIR || path.join(__dirname, "worker-audio");
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 fs.mkdirSync(WORK_DIR, { recursive: true });
 
@@ -118,7 +119,6 @@ function normalizeMode(value) {
   return String(value || "").trim().toLowerCase() === "global" ? "global" : "private";
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function normalizeAccount(raw) {
   // clientId はこのクライアントが自分で生成したPCのID（UUID）。アカウントごとに1つ持ち、
