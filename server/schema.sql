@@ -136,6 +136,9 @@ CREATE TABLE IF NOT EXISTS documents (
 
 -- 端末からアップロードされた音声を外部PCワーカーへ渡すジョブ。
 -- status: 'queued'(待機) → 'processing'(処理中) → 'done'(完了) | 'error'(失敗)
+-- 処理に失敗しても attempts が上限（AUDIO_MAX_ATTEMPTS、既定3回）未満なら
+-- 自動で queued に戻して別のPCへ再割り振りする。上限に達したら error で保留し、
+-- 音声ファイルは done になるまで削除しない（error でも残り、手動再試行できる）。
 CREATE TABLE IF NOT EXISTS audio_jobs (
   id            INT AUTO_INCREMENT PRIMARY KEY,
   email         VARCHAR(255) NOT NULL,
@@ -149,6 +152,8 @@ CREATE TABLE IF NOT EXISTS audio_jobs (
   transcript_id INT          NULL,
   -- ジョブを確保したワーカーPC（audio_workers.id）。二重処理防止と処理元表示用。
   claimed_by    INT          NULL,
+  -- 処理を試みた回数（claim のたびに +1）。失敗時の自動再試行の上限判定に使う。
+  attempts      INT          NOT NULL DEFAULT 0,
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   KEY idx_audio_email (email, created_at),

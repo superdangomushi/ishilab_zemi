@@ -158,6 +158,7 @@ async function ensureSchema() {
       error         TEXT         NULL,
       transcript_id INT          NULL,
       claimed_by    INT          NULL,
+      attempts      INT          NOT NULL DEFAULT 0,
       created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_audio_email (email, created_at),
@@ -168,6 +169,9 @@ async function ensureSchema() {
   // ジョブを確保したワーカーPC（audio_workers.id）。再キュー後の二重処理防止と
   // 「どのPCが処理したか」の表示に使う。
   await addColumnIfMissing("audio_jobs", "claimed_by", "INT NULL");
+  // 処理を試みた回数（claim のたびに +1）。失敗時は上限までは自動で queued に戻して
+  // 再割り振りし、上限を超えたら error で保留する（音声ファイルは残るので手動再試行できる）。
+  await addColumnIfMissing("audio_jobs", "attempts", "INT NOT NULL DEFAULT 0");
 
   // 音声ジョブを処理するワーカーPC（クライアント）。クライアントが初回起動時に
   // UUID（client_uuid）と表示名を自分で決めてサーバーへ登録する。以後の全リクエストは
@@ -893,7 +897,7 @@ async function claimNextAudioJob(email = null, workerId = null, { respectPrefs =
     }
     const [r] = await conn.query(
       `UPDATE audio_jobs
-       SET id = LAST_INSERT_ID(id), status = 'processing', claimed_by = ?, error = NULL
+       SET id = LAST_INSERT_ID(id), status = 'processing', claimed_by = ?, attempts = attempts + 1
        WHERE ${where.join(" AND ")}
        ORDER BY id ASC LIMIT 1`,
       args
@@ -948,12 +952,52 @@ async function finishAudioJob(id, { status, error = null, transcriptId = null })
   );
 }
 
+// 処理失敗の記録。試行回数（attempts。claim ごとに +1 済み）が maxAttempts 未満なら
+// queued に戻して即座に別のPCへ再割り振りし、上限に達したら error で保留する。
+// どちらの場合も音声ファイルは消さない（成功時に finishJobWithText 側で削除する）。
+// 戻り値は更新後の { status, attempts }（ジョブが見つからなければ null）。
+async function failAudioJob(id, error, maxAttempts = 3) {
+  const max = Math.max(Number(maxAttempts) || 3, 1);
+  await pool.query(
+    `UPDATE audio_jobs
+     SET status = IF(attempts < ?, 'queued', 'error'), claimed_by = NULL, error = ?
+     WHERE id = ? AND status = 'processing'`,
+    [max, error, Number(id)]
+  );
+  const [rows] = await pool.query(
+    `SELECT status, attempts FROM audio_jobs WHERE id = ? LIMIT 1`,
+    [Number(id)]
+  );
+  return rows[0] || null;
+}
+
+// 手動再試行用にジョブ1件を所有者チェック付きで返す。
+async function getAudioJob(email, id) {
+  const [rows] = await pool.query(
+    `SELECT id, email, filename, stored_path, status, attempts FROM audio_jobs
+     WHERE id = ? AND email = ? LIMIT 1`,
+    [Number(id), email]
+  );
+  return rows[0] || null;
+}
+
+// error で保留されたジョブをダッシュボードの「再試行」から待機列に戻す。
+// attempts を 0 に戻すので、また上限回数まで自動再試行される。
+async function retryAudioJob(email, id) {
+  const [r] = await pool.query(
+    `UPDATE audio_jobs SET status = 'queued', attempts = 0, claimed_by = NULL
+     WHERE id = ? AND email = ? AND status = 'error'`,
+    [Number(id), email]
+  );
+  return r.affectedRows;
+}
+
 // activeOnly=true のときは未処理（queued）・処理中（processing）・失敗（error）だけを返す
 // （完了済みは文字起こし一覧側で見えるので、音声ジョブ一覧には出さない）。
 async function listAudioJobs(email, { limit = 30, activeOnly = false } = {}) {
   const statusCond = activeOnly ? `AND j.status IN ('queued','processing','error')` : "";
   const [rows] = await pool.query(
-    `SELECT j.id, j.filename, j.size_bytes, j.status, j.error, j.transcript_id,
+    `SELECT j.id, j.filename, j.size_bytes, j.status, j.error, j.transcript_id, j.attempts,
             j.created_at, j.updated_at, j.claimed_by, w.name AS worker_name
      FROM audio_jobs j
      LEFT JOIN audio_workers w ON w.id = j.claimed_by
@@ -1403,6 +1447,9 @@ module.exports = {
   getClaimedAudioJob,
   touchAudioJob,
   finishAudioJob,
+  failAudioJob,
+  getAudioJob,
+  retryAudioJob,
   listAudioJobs,
   requeueStaleAudioJobs,
   // summaries

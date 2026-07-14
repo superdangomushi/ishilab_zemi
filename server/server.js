@@ -1073,6 +1073,20 @@ app.get("/api/audio/jobs", async (req, res) => {
   }
 });
 
+// 失敗（error）で保留された音声ジョブを待機列に戻す（ダッシュボードの「再試行」）。
+// 上限回数の自動再試行を使い切ったジョブも、これで attempts が 0 に戻り再処理される。
+app.post("/api/audio/jobs/:id/retry", async (req, res) => {
+  const account = await authFromReq(req);
+  if (!account) return res.status(401).json({ ok: false, error: "認証エラー" });
+  try {
+    const r = await audio.retryJob(account.email, req.params.id);
+    if (!r.ok) return res.status(r.status || 500).json({ ok: false, error: r.error });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: serverErr(e) });
+  }
+});
+
 function clientIpOf(req) {
   const ip = String(req.ip || req.socket?.remoteAddress || "").trim().slice(0, 64);
   return ip || null;
@@ -2375,8 +2389,8 @@ function renderDashboard() {
           CPU/メモリ/GPU はクライアントから3秒ごとに届く使用率です。
         </p>
         <div id="audioWorkers" style="margin-bottom:.8rem"><p class="muted">読み込み中…</p></div>
-        <h3 style="font-size:.95rem; margin:.6rem 0 .4rem">未処理・処理中の音声</h3>
-        <p class="muted" style="margin:.2rem 0 .5rem">まだ文字起こしが終わっていない音声だけを表示します（完了した音声は下の履歴に文字起こしとして並びます）。</p>
+        <h3 style="font-size:.95rem; margin:.6rem 0 .4rem">未完了の音声（処理中・待機中・失敗）</h3>
+        <p class="muted" style="margin:.2rem 0 .5rem">まだ文字起こしが終わっていない音声を状態別に表示します（見出しをクリックで折りたたみ）。完了した音声は下の履歴に文字起こしとして並びます。処理に失敗した音声は自動で数回まで再割り振りされ、それでも失敗したものは「失敗」に残ります（音声ファイルは保持されるので「再試行」できます）。</p>
         <div id="audioJobs"><p class="muted">読み込み中…</p></div>
         <hr>
         <h2>文字起こしの履歴</h2>
@@ -2983,26 +2997,51 @@ function renderDashboard() {
       loadAudioWorkers();
     }
 
-    // ---- 音声ジョブ状況（未処理・処理中・失敗のみ表示） ----
-    const AUDIO_STATUS = { queued:'未処理', processing:'処理中', error:'失敗' };
+    // ---- 音声ジョブ状況（処理中・待機中・失敗を状態別の折りたたみで表示） ----
+    const AUDIO_STATUS = { queued:'待機中', processing:'処理中', error:'失敗' };
+    // 各セクションの開閉状態。自動更新（15秒ごとの再描画）で畳んだものが開き直さない
+    // ように覚えておく。失敗は件数が嵩みやすいので初期状態では畳んでおく。
+    const audioJobsOpen = { processing:true, queued:true, error:false };
     async function loadAudioJobs(){
       if(!auth.email) return;
       if(audioJobsTimer) clearTimeout(audioJobsTimer);
       audioJobsTimer = null;
       try {
-        const r = await fetch('/api/audio/jobs?active=1',{headers:headers()});
+        const r = await fetch('/api/audio/jobs?active=1&limit=100',{headers:headers()});
         const j = await r.json();
         if(!j.ok){ $('audioJobs').innerHTML='<p class="muted">'+escapeHtml(j.error||'取得失敗')+'</p>'; return; }
-        if(!j.jobs.length){ $('audioJobs').innerHTML='<p class="muted">未処理・処理中の音声はありません。</p>'; return; }
-        const rows = j.jobs.map(a => '<tr><td>'+escapeHtml(a.filename)+'</td>'+
+        if(!j.jobs.length){ $('audioJobs').innerHTML='<p class="muted">未完了の音声はありません。</p>'; return; }
+        const row = a => '<tr><td>'+escapeHtml(a.filename)+'</td>'+
           '<td class="num">'+Math.round((a.size_bytes||0)/1024/1024*10)/10+' MB</td>'+
-          '<td>'+(AUDIO_STATUS[a.status]||a.status)+(a.error?'<div class="muted">'+escapeHtml(a.error)+'</div>':'')+'</td>'+
+          '<td>'+((a.attempts||0)>1 ? a.attempts+'回目' : '')+
+            (a.error?'<div class="muted">'+escapeHtml(a.error)+'</div>':'')+
+            (a.status==='error' ? '<div><button class="ghost small" onclick="retryAudioJob('+a.id+')">再試行</button></div>' : '')+'</td>'+
           '<td>'+(a.worker_name ? escapeHtml(a.worker_name) : (a.claimed_by ? '#'+a.claimed_by : ''))+'</td>'+
-          '<td>'+new Date(a.updated_at).toLocaleString('ja-JP')+'</td></tr>').join('');
-        $('audioJobs').innerHTML = '<table><thead><tr><th>ファイル</th><th>サイズ</th><th>状態</th><th>処理PC</th><th>更新</th></tr></thead><tbody>'+rows+'</tbody></table>';
+          '<td>'+new Date(a.updated_at).toLocaleString('ja-JP')+'</td></tr>';
+        const html = ['processing','queued','error'].map(st => {
+          const jobs = j.jobs.filter(a => a.status===st);
+          if(!jobs.length) return '';
+          return '<details data-st="'+st+'"'+(audioJobsOpen[st]?' open':'')+' style="margin:.3rem 0">'+
+            '<summary style="cursor:pointer; font-weight:600; padding:.2rem 0">'+AUDIO_STATUS[st]+' ('+jobs.length+'件)</summary>'+
+            '<table><thead><tr><th>ファイル</th><th>サイズ</th><th>状況</th><th>処理PC</th><th>更新</th></tr></thead><tbody>'+
+            jobs.map(row).join('')+'</tbody></table></details>';
+        }).join('');
+        $('audioJobs').innerHTML = html;
+        // 開閉状態を覚える（自動更新後の再描画にも反映される）。
+        $('audioJobs').querySelectorAll('details').forEach(d => {
+          d.addEventListener('toggle', () => { audioJobsOpen[d.dataset.st] = d.open; });
+        });
         // 未完了ジョブがあれば少し待って自動更新（完了すると一覧から消え、履歴側に現れる）。
         if(j.jobs.some(a => a.status==='queued'||a.status==='processing')) audioJobsTimer = setTimeout(loadAudioJobs, 15000);
       } catch(e){}
+    }
+    async function retryAudioJob(id){
+      try {
+        const r = await fetch('/api/audio/jobs/'+id+'/retry',{method:'POST',headers:headers()});
+        const j = await r.json();
+        if(!j.ok){ alert('再試行できません: '+(j.error||'')); return; }
+      } catch(e){ alert('再試行に失敗しました'); return; }
+      loadAudioJobs();
     }
 
     // ---- Waseda アカウント連携 ----

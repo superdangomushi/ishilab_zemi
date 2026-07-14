@@ -7,6 +7,11 @@
 //   3. 文字起こし結果は従来のテキストアップロードと同じ流れ
 //      （transcripts 保存 → 課題/予定の抽出(Gemini) → tasks 登録）に乗せる
 //   4. 進行状況は audio_jobs.status（queued/processing/done/error）で確認できる
+//
+// 音声ファイルは処理が成功（done）するまでサーバーに保持する。処理に失敗したら
+// 上限（AUDIO_MAX_ATTEMPTS、既定3回）までは即座に queued へ戻して別のPCへ
+// 再割り振りし、上限を超えたら error で保留する。error でもファイルは残るので、
+// ダッシュボードの「再試行」からいつでも待機列に戻せる。
 
 const fs = require("fs");
 const path = require("path");
@@ -19,6 +24,9 @@ const AUDIO_DIR = path.join(__dirname, "uploads", "audio");
 // この分数以上途絶えたら、ワーカー停止とみなして queued に戻し別のPCへ振り直す。
 // ハートビートを送らない旧クライアントでは、10分を超える処理は途中で奪われてやり直しになる。
 const STALE_WORKER_MIN = Math.max(Number(process.env.AUDIO_WORKER_STALE_MIN || 10), 1);
+// 1ジョブあたりの処理試行回数の上限。失敗してもこの回数までは自動で queued に戻して
+// 再割り振りする（claim ごとに attempts が +1 され、上限に達したら error で保留）。
+const MAX_ATTEMPTS = Math.max(Number(process.env.AUDIO_MAX_ATTEMPTS || 3), 1);
 
 function ensureDir() {
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
@@ -132,17 +140,46 @@ async function completeRemoteJob(email, id, { text, error, workerId } = {}) {
   const job = await getClaimedJob(email, id, workerId);
   if (!job) return { ok: false, status: 404, error: "処理中の音声ジョブが見つかりません" };
   if (error) {
-    await db.finishAudioJob(job.id, { status: "error", error: String(error).slice(0, 1000) });
-    return { ok: true, status: "error" };
+    const failed = await failJob(job.id, error);
+    return { ok: true, status: failed?.status || "error" };
   }
   try {
     const result = await finishJobWithText(job, text || "");
     return { ok: true, status: "done", ...result };
   } catch (e) {
     console.error(`外部ワーカー結果の保存に失敗: #${job.id}:`, e.message);
-    await db.finishAudioJob(job.id, { status: "error", error: String(e.message).slice(0, 1000) });
+    await failJob(job.id, e.message);
     return { ok: false, status: 500, error: e.message };
   }
+}
+
+// 処理失敗の共通処理。上限までは queued に戻して即再割り振り、超えたら error で保留。
+// 音声ファイルはどちらでも消さない（成功時のみ削除）。
+async function failJob(jobId, error) {
+  const failed = await db.failAudioJob(jobId, String(error).slice(0, 1000), MAX_ATTEMPTS);
+  if (failed?.status === "queued") {
+    console.log(`音声ジョブ #${jobId} が失敗（${failed.attempts}回目）。再キューして別のPCへ振り直します`);
+  } else {
+    console.error(
+      `音声ジョブ #${jobId} が ${failed?.attempts ?? "?"} 回失敗したため保留にしました` +
+      "（音声は保持。ダッシュボードから再試行できます）"
+    );
+  }
+  return failed;
+}
+
+// ダッシュボードの「再試行」。error で保留されたジョブを待機列に戻す。
+async function retryJob(email, id) {
+  const job = await db.getAudioJob(email, Number(id));
+  if (!job) return { ok: false, status: 404, error: "音声ジョブが見つかりません" };
+  if (job.status !== "error") {
+    return { ok: false, status: 400, error: "失敗状態のジョブだけ再試行できます" };
+  }
+  if (!fs.existsSync(job.stored_path)) {
+    return { ok: false, status: 410, error: "音声ファイルが残っていないため再試行できません" };
+  }
+  await db.retryAudioJob(email, job.id);
+  return { ok: true };
 }
 
 // 起動時: 中断されたジョブを queued に戻し、定期的にキューを見る。
@@ -166,4 +203,5 @@ module.exports = {
   claimRemoteJob,
   getClaimedJob,
   completeRemoteJob,
+  retryJob,
 };
