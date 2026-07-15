@@ -50,6 +50,11 @@ object ReminderNotifier {
     fun poll(context: Context) {
         val store = AccountStore(context)
         if (!store.loggedIn) return
+        // 通知OFF・おやすみモード中は取得も既読化もしない（明けてから届く）。
+        if (com.ishilab.transcriber.service.NotificationPrefs(context).shouldSuppressNow()) {
+            Log.i(TAG, "reminders suppressed (notifications off or quiet hours)")
+            return
+        }
         val client = AiHelperClient()
         val reminders = client.fetchReminders(store.baseUrl, store.email, store.token)
         if (reminders.isEmpty()) return

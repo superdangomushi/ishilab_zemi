@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -85,6 +86,7 @@ import com.ishilab.transcriber.net.AiHelperClient
 import com.ishilab.transcriber.service.AudioCaptureService
 import com.ishilab.transcriber.service.DailyDigestScheduler
 import com.ishilab.transcriber.service.DigestTimeStore
+import com.ishilab.transcriber.service.NotificationPrefs
 import com.ishilab.transcriber.service.ServiceState
 import com.ishilab.transcriber.ui.ChatMessage
 import com.ishilab.transcriber.ui.MainViewModel
@@ -913,83 +915,368 @@ private fun AiTab(
     onSaveWaseda: (String, String) -> Unit,
     onSyncWaseda: () -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item { AiHelperCard(ui, onLogin, onRegister, onLogout, onSetSttQuality) }
+    // 設定（連携・通知）画面を開いているかどうか。⚙で開き、戻るで一覧へ。
+    var showSettings by rememberSaveable { mutableStateOf(false) }
 
-        // Google 連携は端末側サインインなので AIHelper ログイン前でも表示する。
-        item { GoogleCalendarCard(ui, onConnectGoogle, onDisconnectGoogle, onSetDefaultGoogle, onLoadCalendar) }
+    if (showSettings) {
+        AiSettingsScreen(
+            ui = ui,
+            onBack = { showSettings = false },
+            onLogin = onLogin, onRegister = onRegister, onLogout = onLogout,
+            onSetSttQuality = onSetSttQuality,
+            onConnectGoogle = onConnectGoogle, onDisconnectGoogle = onDisconnectGoogle,
+            onSetDefaultGoogle = onSetDefaultGoogle, onLoadCalendar = onLoadCalendar,
+            onLoadMoodle = onLoadMoodle, onSaveMoodleUrl = onSaveMoodleUrl, onSyncMoodle = onSyncMoodle,
+            onLoadWaseda = onLoadWaseda, onSaveWaseda = onSaveWaseda, onSyncWaseda = onSyncWaseda,
+        )
+        return
+    }
 
-        if (!ui.account.loggedIn) {
-            item {
-                Text(
-                    "AIHelper にログインすると、Moodle 連携や予定・課題の確認、AIチャットが使えます。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            return@LazyColumn
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ヘッダー: タイトルと設定（⚙）ボタン。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("AIアシスタント", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = { showSettings = true }) { Text("⚙ 連携・設定") }
         }
 
-        // ---- 連携（アカウントに紐付く） ----
-        item { MoodleCard(ui, onLoadMoodle, onSaveMoodleUrl, onSyncMoodle) }
-        item { WasedaCard(ui, onLoadWaseda, onSaveWaseda, onSyncWaseda) }
+        if (!ui.account.loggedIn) {
+            // 未ログイン時: チャットは使えないので設定へ誘導するだけ。
+            Card(modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("AIアシスタントを使うには", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "AIHelper にログインすると、今日の要約や予定・課題を見ながらAIに相談・登録を頼めます。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Button(onClick = { showSettings = true }) { Text("ログイン / 新規登録") }
+                }
+            }
+            return
+        }
 
-        // ---- 1日のまとめ通知 ----
-        item { DigestCard() }
+        // ---- ログイン時: 折りたたみの要約・予定課題 + 主役のチャット ----
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CollapsibleCard(title = "今日の要約") {
+                SummaryContent(ui, onLoadSummary, onGenerateSummary)
+            }
+            CollapsibleCard(
+                title = "予定・課題",
+                badge = if (ui.tasks.isEmpty()) null else ui.tasks.size.toString(),
+            ) {
+                TasksContent(
+                    ui, onLoadTasks, onSetShowDone, onToggleTask,
+                    onUpdateTask, onDeleteTask, onAddToCalendar
+                )
+            }
+        }
+        Spacer(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant)
+        )
+        // チャットが残りの高さを全部使う。
+        AiChatPanel(
+            ui = ui,
+            onAsk = onAsk,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 12.dp),
+            expandMessages = true,
+        )
+    }
+}
 
-        // ---- 今日の要約 ----
-        item { SummaryCard(ui, onLoadSummary, onGenerateSummary) }
+/**
+ * 見出しタップで開閉するカード。既定は閉じた状態にして、チャットを広く見せる。
+ */
+@Composable
+private fun CollapsibleCard(
+    title: String,
+    badge: String? = null,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable(title) { mutableStateOf(false) }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(title, style = MaterialTheme.typography.titleSmall)
+                    if (badge != null) {
+                        Text(
+                            badge,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(50))
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+                Text(
+                    if (expanded) "▾" else "▸",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                content()
+            }
+        }
+    }
+}
 
-        // ---- 予定・課題 ----
-        item {
+/** 折りたたみ内の「今日の要約」中身（見出しは CollapsibleCard 側）。 */
+@Composable
+private fun SummaryContent(
+    ui: UiState,
+    onLoadSummary: () -> Unit,
+    onGenerateSummary: () -> Unit,
+) {
+    LaunchedEffect(ui.account.email) { onLoadSummary() }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = onGenerateSummary, enabled = !ui.summaryLoading) { Text("生成") }
+            OutlinedButton(onClick = onLoadSummary, enabled = !ui.summaryLoading) { Text("更新") }
+        }
+        ui.summaryError?.let { Text("エラー: $it", color = MaterialTheme.colorScheme.error) }
+        when {
+            ui.summaryLoading && ui.summary.isNullOrBlank() ->
+                Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+            ui.summary.isNullOrBlank() ->
+                Text(
+                    "まだ今日の要約はありません。録音がたまるか「生成」で作成できます。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            else -> Text(ui.summary, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/** 折りたたみ内の「予定・課題」中身。件数が多い場合に備え高さを制限してスクロールさせる。 */
+@Composable
+private fun TasksContent(
+    ui: UiState,
+    onLoadTasks: () -> Unit,
+    onSetShowDone: (Boolean) -> Unit,
+    onToggleTask: (AiHelperClient.Task) -> Unit,
+    onUpdateTask: (AiHelperClient.Task, String, String, String, String) -> Unit,
+    onDeleteTask: (AiHelperClient.Task) -> Unit,
+    onAddToCalendar: (AiHelperClient.Task) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(onClick = { onSetShowDone(!ui.showDoneTasks) }) {
+                Text(if (ui.showDoneTasks) "未完了のみ" else "完了も表示")
+            }
+            OutlinedButton(onClick = onLoadTasks) { Text("更新") }
+        }
+        ui.tasksError?.let { Text("取得エラー: $it", color = MaterialTheme.colorScheme.error) }
+        when {
+            ui.tasksLoading && ui.tasks.isEmpty() ->
+                Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
+            ui.tasks.isEmpty() ->
+                Text("表示できる予定・課題はありません。", style = MaterialTheme.typography.bodySmall)
+            else -> LazyColumn(
+                modifier = Modifier.heightIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(ui.tasks) { task ->
+                    TaskCard(
+                        task = task,
+                        actionInProgress = ui.taskActionInProgressId == task.id,
+                        onToggleTask = onToggleTask,
+                        onUpdateTask = onUpdateTask,
+                        onDeleteTask = onDeleteTask,
+                        onAddToCalendar = if (ui.googleConnected) onAddToCalendar else null,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 右上⚙から開く連携・設定画面。AIHelper ログインや Google/Moodle/Waseda/通知をここに集約した。 */
+@Composable
+private fun AiSettingsScreen(
+    ui: UiState,
+    onBack: () -> Unit,
+    onLogin: (String, String, String) -> Unit,
+    onRegister: (String, String, String) -> Unit,
+    onLogout: () -> Unit,
+    onSetSttQuality: (String) -> Unit,
+    onConnectGoogle: () -> Unit,
+    onDisconnectGoogle: (String) -> Unit,
+    onSetDefaultGoogle: (String) -> Unit,
+    onLoadCalendar: () -> Unit,
+    onLoadMoodle: () -> Unit,
+    onSaveMoodleUrl: (String) -> Unit,
+    onSyncMoodle: () -> Unit,
+    onLoadWaseda: () -> Unit,
+    onSaveWaseda: (String, String) -> Unit,
+    onSyncWaseda: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            TextButton(onClick = onBack) { Text("← 戻る") }
+            Text("連携・設定", style = MaterialTheme.typography.titleMedium)
+        }
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
+        ) {
+            item { AiHelperCard(ui, onLogin, onRegister, onLogout, onSetSttQuality) }
+            // 通知の受け取り設定（ログイン前でも変更できる端末ローカル設定）。
+            item { NotificationSettingsCard() }
+            // Google 連携は端末側サインインなので AIHelper ログイン前でも表示する。
+            item { GoogleCalendarCard(ui, onConnectGoogle, onDisconnectGoogle, onSetDefaultGoogle, onLoadCalendar) }
+            if (ui.account.loggedIn) {
+                item { MoodleCard(ui, onLoadMoodle, onSaveMoodleUrl, onSyncMoodle) }
+                item { WasedaCard(ui, onLoadWaseda, onSaveWaseda, onSyncWaseda) }
+                item { DigestCard() }
+            } else {
+                item {
+                    Text(
+                        "AIHelper にログインすると、Moodle / Waseda 連携やまとめ通知を設定できます。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 通知の受け取り設定カード。マスターON/OFFと「おやすみモード」（指定時間帯は通知しない）。
+ * 就寝中に締切リマインドやまとめ通知が鳴り響かないようにする。
+ */
+@Composable
+private fun NotificationSettingsCard() {
+    val context = LocalContext.current
+    val prefs = remember { NotificationPrefs(context) }
+    var enabled by remember { mutableStateOf(prefs.enabled) }
+    var quietEnabled by remember { mutableStateOf(prefs.quietEnabled) }
+    var quietStart by remember { mutableStateOf(prefs.quietStart) }
+    var quietEnd by remember { mutableStateOf(prefs.quietEnd) }
+
+    fun pickTime(current: String, onPicked: (String) -> Unit) {
+        val parts = current.split(':')
+        android.app.TimePickerDialog(
+            context,
+            { _, h, m -> onPicked(String.format("%02d:%02d", h, m)) },
+            parts.getOrNull(0)?.toIntOrNull() ?: 23,
+            parts.getOrNull(1)?.toIntOrNull() ?: 0,
+            true
+        ).show()
+    }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("通知", style = MaterialTheme.typography.titleMedium)
+
+            // マスタースイッチ。
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("予定・課題", style = MaterialTheme.typography.titleMedium)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { onSetShowDone(!ui.showDoneTasks) }) {
-                        Text(if (ui.showDoneTasks) "未完了のみ" else "完了も表示")
-                    }
-                    OutlinedButton(onClick = onLoadTasks) { Text("更新") }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("通知を受け取る", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "締切リマインドと1日のまとめ通知のON/OFF。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { enabled = it; prefs.enabled = it }
+                )
+            }
+
+            // おやすみモード。
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("おやすみモード", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "指定した時間帯は通知しません。リマインドは時間帯が明けてから届きます。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Switch(
+                    checked = quietEnabled,
+                    enabled = enabled,
+                    onCheckedChange = { quietEnabled = it; prefs.quietEnabled = it }
+                )
+            }
+
+            if (enabled && quietEnabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = { pickTime(quietStart) { quietStart = it; prefs.quietStart = it } },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("開始 $quietStart") }
+                    Text("〜")
+                    OutlinedButton(
+                        onClick = { pickTime(quietEnd) { quietEnd = it; prefs.quietEnd = it } },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("終了 $quietEnd") }
                 }
             }
         }
-
-        ui.tasksError?.let { err ->
-            item { Text("取得エラー: $err", color = MaterialTheme.colorScheme.error) }
-        }
-
-        when {
-            ui.tasksLoading && ui.tasks.isEmpty() -> item {
-                Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
-            }
-            ui.tasks.isEmpty() -> item {
-                Text("表示できる予定・課題はありません。", style = MaterialTheme.typography.bodySmall)
-            }
-            else -> items(ui.tasks) { task ->
-                TaskCard(
-                    task = task,
-                    actionInProgress = ui.taskActionInProgressId == task.id,
-                    onToggleTask = onToggleTask,
-                    onUpdateTask = onUpdateTask,
-                    onDeleteTask = onDeleteTask,
-                    onAddToCalendar = if (ui.googleConnected) onAddToCalendar else null,
-                )
-            }
-        }
-
-        ui.googleMessage?.let { msg ->
-            item { Text(msg, style = MaterialTheme.typography.bodySmall) }
-        }
-
-        // ---- AIチャット ----
-        item { AiChatCard(ui, onAsk) }
     }
 }
 
@@ -1228,49 +1515,6 @@ private fun WasedaCard(
                     color = if (ui.wasedaSyncRunning) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-        }
-    }
-}
-
-/** 今日の要約カード。サーバーの日次要約を表示し、更新/生成し直しができる。 */
-@Composable
-private fun SummaryCard(
-    ui: UiState,
-    onLoadSummary: () -> Unit,
-    onGenerateSummary: () -> Unit,
-) {
-    // ログイン直後に一度取得する（ログインで既に取得済みでも安全）。
-    LaunchedEffect(ui.account.email) { onLoadSummary() }
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("今日の要約", style = MaterialTheme.typography.titleMedium)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = onGenerateSummary, enabled = !ui.summaryLoading) {
-                        Text("生成")
-                    }
-                    OutlinedButton(onClick = onLoadSummary, enabled = !ui.summaryLoading) {
-                        Text("更新")
-                    }
-                }
-            }
-            ui.summaryError?.let {
-                Text("エラー: $it", color = MaterialTheme.colorScheme.error)
-            }
-            when {
-                ui.summaryLoading && ui.summary.isNullOrBlank() ->
-                    Text("読み込み中…", style = MaterialTheme.typography.bodySmall)
-                ui.summary.isNullOrBlank() ->
-                    Text(
-                        "まだ今日の要約はありません。録音がたまるか「生成」で作成できます。",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                else -> Text(ui.summary, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -1807,20 +2051,6 @@ private fun AssistantChatDialog(
 }
 
 /** AIチャット: 「今日の予定は？」と聞けば回答、「予定入れといて」で登録まで実行。 */
-@Composable
-private fun AiChatCard(ui: UiState, onAsk: (String) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("AIに聞く / 頼む", style = MaterialTheme.typography.titleMedium)
-            AiChatPanel(
-                ui = ui,
-                onAsk = onAsk,
-                expandMessages = false
-            )
-        }
-    }
-}
-
 @Composable
 private fun AiChatPanel(
     ui: UiState,

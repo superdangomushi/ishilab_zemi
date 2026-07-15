@@ -156,6 +156,11 @@ object DailyDigest {
     fun show(context: Context) {
         val store = AccountStore(context)
         if (!store.loggedIn) return
+        // 通知OFF・おやすみモード中はまとめ通知も出さない。
+        if (NotificationPrefs(context).shouldSuppressNow()) {
+            Log.i("DailyDigest", "digest suppressed (notifications off or quiet hours)")
+            return
+        }
         val client = AiHelperClient()
         val today = LocalDate.now()
         val sb = StringBuilder()
