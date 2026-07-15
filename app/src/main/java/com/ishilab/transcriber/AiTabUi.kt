@@ -288,7 +288,14 @@ internal fun SummaryContent(
                     "まだ今日の要約はありません。録音がたまるか「生成」で作成できます。",
                     style = MaterialTheme.typography.bodySmall
                 )
-            else -> Text(ui.summary, style = MaterialTheme.typography.bodyMedium)
+            // 長文でもカード内に収まるよう高さを制限してスクロールさせる。
+            else -> Text(
+                ui.summary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState())
+            )
         }
     }
 }
