@@ -40,6 +40,7 @@ const gemini = require("./gemini");
 const line = require("./line");
 const summary = require("./summary");
 const reminders = require("./reminders");
+const conflicts = require("./conflicts");
 const moodle = require("./moodle");
 const audio = require("./audio");
 const google = require("./google");
@@ -359,6 +360,11 @@ app.post("/api/calendar/sync", async (req, res) => {
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   try {
     await db.replaceCalendarEvents(account.email, events);
+    // 同期されたカレンダー予定同士・「予定」タスクとの時間帯重複（ダブルブッキング）を
+    // チェックして通知する。同期の応答は待たせない（失敗しても同期自体は成功扱い）。
+    conflicts.checkCalendarConflicts(account.email, events).catch((e) => {
+      console.error("カレンダー同期の重複チェックに失敗:", e.message);
+    });
     res.json({ ok: true, count: events.length });
   } catch (e) {
     res.status(500).json({ ok: false, error: serverErr(e) });
@@ -514,6 +520,7 @@ app.post("/api/google/add-event", async (req, res) => {
     if (!row) return res.status(400).json({ ok: false, error: "Google アカウントが未連携です" });
     const token = await google.accessTokenOf(decryptCred(row.refresh_token));
     await google.insertDeadline(token, content, String(req.body?.deadline || ""), Boolean(req.body?.dateOnly));
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: serverErr(e) });
   }
@@ -1528,6 +1535,8 @@ app.post("/api/ask", heavyLimiter, async (req, res) => {
 
     // Gemini が返した操作を実行する。
     const applied = [];
+    // 追加された「予定」（あとで Google カレンダー登録・重複チェックに使う）。
+    const addedYotei = [];
     for (const a of result.actions) {
       if (a.op === "add_task" && a.content) {
         await db.addTask(account.email, {
@@ -1538,6 +1547,9 @@ app.post("/api/ask", heavyLimiter, async (req, res) => {
           date_only: a.date_only,
         });
         applied.push({ op: "add_task", type: a.type, content: a.content, deadline_at: a.deadline_at });
+        if (a.type === "yotei" && a.deadline_at) {
+          addedYotei.push({ title: a.content, deadline_at: a.deadline_at, date_only: !!a.date_only });
+        }
       } else if (a.op === "complete_task" && a.target) {
         const target = resolveTaskTarget(tasks, a.target);
         if (target) {
@@ -1581,12 +1593,58 @@ app.post("/api/ask", heavyLimiter, async (req, res) => {
         for (const t of fallback) {
           await db.addTask(account.email, t);
           applied.push({ op: "add_task", type: t.type, content: t.content, deadline_at: t.deadline_at });
+          if (t.type === "yotei" && t.deadline_at) {
+            addedYotei.push({ title: t.content, deadline_at: t.deadline_at, date_only: !!t.date_only });
+          }
         }
         if (!fallback.length) {
           reply += "\n（※すみません、今回は登録できていません。「〇月〇日に△△を予定に入れて」の形でもう一度お願いします）";
         }
       } catch (e) {
         console.error("ask の登録フォールバックに失敗:", e.message);
+      }
+    }
+
+    // 追加された「予定」について:
+    // 1) 既存の予定・カレンダーイベントと時間帯が重なっていないか（ダブルブッキング）を
+    //    確認し、重なっていれば返信に警告を足して LINE/アプリ通知にも記録する。
+    // 2) Google 連携済みなら Google カレンダーにも登録する
+    //    （従来はサーバー内のタスク表に入るだけでカレンダーに反映されなかった）。
+    if (addedYotei.length) {
+      const busy = [
+        ...tasks
+          .filter((t) => t.type === "yotei" && t.status !== "done" && t.deadline_at && !t.date_only)
+          .map((t) => ({ title: t.content, startMillis: conflicts.millisOf(t.deadline_at) })),
+        ...calendar.map((ev) => ({ title: ev.title, startMillis: ev.startMillis || 0 })),
+      ];
+      for (const ev of addedYotei) {
+        if (ev.date_only) continue;
+        const item = { title: ev.title, startMillis: conflicts.millisOf(ev.deadline_at) };
+        if (!(item.startMillis > 0)) continue;
+        const found = conflicts.findConflicts(item, busy);
+        if (found.length) {
+          reply += `\n\n⚠️ ${found.map((c) => `「${c.title}」`).join("・")}と時間が重なっています（ダブルブッキングの可能性）。`;
+          try {
+            await conflicts.notifyConflict(account.email, item, found);
+          } catch (ce) {
+            console.error("ダブルブッキング通知に失敗:", ce.message);
+          }
+        }
+        // 同じ発話で複数の予定が追加されたとき、新規予定同士の重複も見られるようにする。
+        busy.push(item);
+      }
+      try {
+        const gAccounts = await db.listGoogleAccounts(account.email);
+        if (gAccounts.length) {
+          const token = await google.accessTokenOf(decryptCred(gAccounts[0].refresh_token));
+          for (const ev of addedYotei) {
+            await google.insertEvent(token, ev.title, ev.deadline_at, ev.date_only);
+          }
+          reply += "\n（Google カレンダーにも登録しました）";
+        }
+      } catch (ge) {
+        console.error("Google カレンダーへの予定登録に失敗:", ge.message);
+        reply += "\n（Google カレンダーへの登録には失敗しました）";
       }
     }
 

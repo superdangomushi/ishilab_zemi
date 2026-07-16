@@ -107,6 +107,29 @@ async function insertDeadline(accessToken, title, deadline, dateOnly) {
     body.start = { dateTime: rfc3339(at - 30 * 60_000) };
     body.end = { dateTime: rfc3339(at) };
   }
+  await postEvent(accessToken, body);
+}
+
+/**
+ * 予定（開始時刻ベース）をカレンダーに登録する。start は "yyyy-MM-dd HH:mm[:ss]" または ISO。
+ * dateOnly のときは終日予定、それ以外は開始時刻から60分のイベントにする
+ * （insertDeadline は「締切時刻に終わる」イベントなので、予定には使わない）。
+ */
+async function insertEvent(accessToken, title, start, dateOnly) {
+  const at = parseMillis(start);
+  if (!at) throw new Error("開始日時が未設定のためカレンダーに登録できません");
+  const body = { summary: title };
+  if (dateOnly) {
+    body.start = { date: dayString(at) };
+    body.end = { date: dayString(at + 24 * 3600_000) };
+  } else {
+    body.start = { dateTime: rfc3339(at) };
+    body.end = { dateTime: rfc3339(at + 60 * 60_000) };
+  }
+  await postEvent(accessToken, body);
+}
+
+async function postEvent(accessToken, body) {
   const res = await fetch(API, {
     method: "POST",
     headers: {
@@ -204,6 +227,7 @@ module.exports = {
   accessTokenOf,
   listUpcomingEvents,
   insertDeadline,
+  insertEvent,
   insertRecurringEvent,
   findEventsByPrivateKey,
 };

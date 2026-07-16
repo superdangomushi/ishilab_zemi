@@ -1101,6 +1101,15 @@ async function recordNotification(email, taskId, kind, channel, message) {
   return r.insertId;
 }
 
+// 同じ通知（kind + message）を送信済みか。ダブルブッキング通知などの二重送信防止に使う。
+async function hasNotification(email, kind, message) {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM notifications WHERE email = ? AND kind = ? AND message = ? LIMIT 1`,
+    [email, kind, message]
+  );
+  return rows.length > 0;
+}
+
 // 端末アプリ向け: まだ ack されていない通知を取得（ローカル通知として表示するため）。
 async function pendingNotifications(email, limit = 50) {
   const [rows] = await pool.query(
@@ -1493,6 +1502,7 @@ module.exports = {
   listDailySummaries,
   // notifications
   recordNotification,
+  hasNotification,
   pendingNotifications,
   ackNotifications,
   listEmailsWithTasks,
